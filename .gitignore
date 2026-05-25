@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# secrets
+keys.py
+
+# state
+db/
+*.db
+*.db-wal
+*.db-shm
+hunterjobs.log
+runner_status.json
+
+# personal config (default config.json IS committed as a template, but
+# uncomment the next line if you want to keep your live one out of git)
+# config.json
+
+.idea/
+.vscode/
+.DS_Store
