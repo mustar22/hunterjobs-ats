@@ -21,3 +21,4 @@ runner_status.json
 .idea/
 .vscode/
 .DS_Store
+.venv/
