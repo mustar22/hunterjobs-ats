@@ -8,7 +8,7 @@
     "linkedin"
   ],
   "results_wanted": 100,
-  "hours_old": 48,
+  "hours_old": 24,
   "brain1_backend": "gemma",
   "brain1_lmstudio_url": "http://localhost:1234/v1",
   "brain1_lmstudio_model": "",
@@ -19,5 +19,6 @@
   "brain1_stage1_backend": "gemma",
   "brain1_stage23_backend": "gemma",
   "brain2_gemma_model": "gemma-4-26b-a4b-it",
-  "brain2_anthropic_model": "claude-haiku-4-5-20251001"
+  "brain2_anthropic_model": "claude-haiku-4-5-20251001",
+  "brain2_openai_model": "gpt-5.5"
 }

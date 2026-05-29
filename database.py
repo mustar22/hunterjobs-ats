@@ -7,10 +7,43 @@ idempotent init (no needless trigger-rebuild on every call).
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
+log = logging.getLogger(__name__)
+
 DB_PATH = Path(__file__).resolve().parent / "db" / "hunterjobs_ats.db"
+
+# Set to True once the sqlite-vec extension has loaded successfully on at least
+# one connection. Gates the RAG ("similar past applications") feature — when the
+# extension can't load (e.g. Python built without extension support), RAG is
+# disabled and the rest of the app runs normally.
+RAG_AVAILABLE = False
+_rag_load_warned = False
+
+
+def _load_vec_extension(conn: sqlite3.Connection) -> bool:
+    """Best-effort load of the sqlite-vec loadable extension onto `conn`.
+    Each connection that touches the job_embeddings vec0 table must load it.
+    On any failure, log once and leave RAG disabled — never raise."""
+    global RAG_AVAILABLE, _rag_load_warned
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        RAG_AVAILABLE = True
+        return True
+    except Exception as e:
+        if not _rag_load_warned:
+            log.warning(
+                "sqlite-vec extension unavailable; RAG (similar past "
+                "applications) disabled. Reason: %s", e
+            )
+            _rag_load_warned = True
+        RAG_AVAILABLE = False
+        return False
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -21,6 +54,7 @@ def get_db_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA busy_timeout=5000;")
     conn.execute("PRAGMA foreign_keys=ON;")
+    _load_vec_extension(conn)
     return conn
 
 
@@ -113,6 +147,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
 );
 """
 
+# Semantic embeddings for the RAG "similar past applications" feature.
+# vec0 virtual table, one 768-dim Gemini text-embedding-004 vector per job.
+# job_id is the primary key (conceptual FK to jobs.id; vec0 doesn't enforce FK).
+# Only created when the sqlite-vec extension is available.
+EMBEDDINGS_TABLE = """
+CREATE VIRTUAL TABLE IF NOT EXISTS job_embeddings USING vec0(
+    job_id    TEXT PRIMARY KEY,
+    embedding float[768] distance_metric=cosine
+);
+"""
+
 TRIGGERS = [
     """
     CREATE TRIGGER IF NOT EXISTS jobs_ai AFTER INSERT ON jobs BEGIN
@@ -146,6 +191,15 @@ def init_db() -> None:
     c.execute(FTS_TABLE)
     for trig in TRIGGERS:
         c.execute(trig)
+
+    # Embeddings table only exists when the sqlite-vec extension loaded. If it
+    # didn't, RAG is disabled and we skip creating it — the rest of the schema
+    # is unaffected.
+    if RAG_AVAILABLE:
+        try:
+            c.execute(EMBEDDINGS_TABLE)
+        except Exception as e:
+            log.warning("Could not create job_embeddings table: %s", e)
 
     # ── lightweight migrations for older DBs missing newer columns ───────────
     c.execute("PRAGMA table_info(jobs)")

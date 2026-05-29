@@ -42,7 +42,9 @@ def _logo_html(size_px: int = 24) -> str:
         )
     return '<span class="dot"></span>'
 
+import database  # for live RAG_AVAILABLE flag
 from database import get_db_connection, init_db
+import embeddings  # RAG: similar past applications
 import runner_status
 import brain1  # for enrich_company_for_job / find_contact_for_job
 import brain2_chat  # for chat interface
@@ -71,6 +73,7 @@ DEFAULT_CONFIG = {
     "brain2_gemini_model": "gemini-3.5-flash",
     "brain2_gemma_model": "gemma-4-26b-a4b-it",
     "brain2_anthropic_model": "claude-sonnet-4-6",
+    "brain2_openai_model": "gpt-5.5",
     "brain2_lmstudio_url": "http://localhost:1234/v1",
     "brain2_lmstudio_model": "",
 }
@@ -98,9 +101,10 @@ def load_keys() -> dict:
             "google": getattr(keys, "GOOGLE_API_KEY", ""),
             "anthropic": getattr(keys, "ANTHROPIC_API_KEY", ""),
             "github": getattr(keys, "GITHUB_PAT", ""),
+            "openai": getattr(keys, "OPENAI_API_KEY", ""),
         }
     except ImportError:
-        return {"google": "", "anthropic": "", "github": ""}
+        return {"google": "", "anthropic": "", "github": "", "openai": ""}
 
 
 # ── subprocess spawning (detached, refresh-safe) ──────────────────────────────
@@ -255,6 +259,18 @@ def update_row_color(job_id: str, color: str) -> None:
     conn = get_db_connection()
     try:
         conn.execute("UPDATE jobs SET row_color=? WHERE id=?", (color or "", job_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_verdict(job_id: str, verdict: str, reason: str = "") -> None:
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE jobs SET verdict=?, reject_reason=? WHERE id=?",
+            (verdict, reason, job_id),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -1093,6 +1109,10 @@ def render_job_row(row: dict, refresh_list_fn):
         with ui.expansion("Company Intel", icon=None).classes("w-full"):
             render_company_intel(row, refresh_list_fn)
 
+        # Expandable: similar past applications (RAG)
+        with ui.expansion("Similar Past Applications", icon=None).classes("w-full"):
+            render_similar_applications(row)
+
         # Expandable: contact & outreach (GOOD or MAYBE w/ gemma3)
         if row.get("verdict") in ("GOOD", "MAYBE"):
             with ui.expansion("Contact & Outreach", icon=None).classes("w-full"):
@@ -1133,6 +1153,18 @@ def _render_apply_button(row: dict, refresh_list_fn):
                 _safe_refresh(),
             ),
         ).classes("btn-ghost").style("font-size: 12px;")
+
+    if row.get("verdict") in ("GOOD", "MAYBE"):
+        ui.button(
+            "Move to BAD",
+            on_click=lambda _, jid=row["id"]: (
+                update_verdict(jid, "BAD", "manual_bad"),
+                safe_notify("Moved to BAD.", type="warning"),
+                _safe_refresh(),
+            ),
+        ).classes("btn-ghost").style(
+            "font-size: 12px; color: var(--bad); border-color: var(--bad);"
+        )
 
 
 def render_company_intel(row: dict, refresh_list_fn):
@@ -1209,6 +1241,47 @@ def render_company_intel(row: dict, refresh_list_fn):
                 else:
                     safe_notify("Research failed. Check logs.", type="negative")
             btn.on("click", lambda _: do_research())
+
+
+def render_similar_applications(row: dict):
+    """RAG: show the top-3 jobs the user has already Applied to that are most
+    semantically similar to this one. Quiet, never-error fallback when RAG is
+    off, this job has no embedding yet, or there are no applied jobs."""
+    def _quiet(msg: str = "No similar applications yet."):
+        ui.html(
+            f'<div style="font-size: 12.5px; color: var(--text-dim);">{msg}</div>'
+        )
+
+    if not database.RAG_AVAILABLE:
+        _quiet()
+        return
+
+    conn = get_db_connection()
+    try:
+        results = embeddings.find_similar_applications(conn, row["id"], top_k=3)
+    except Exception:
+        results = []
+    finally:
+        conn.close()
+
+    if not results:
+        _quiet()
+        return
+
+    for r in results:
+        pct = f"{r['score'] * 100:.0f}%"
+        ui.html(
+            f'<div style="display: flex; justify-content: space-between; '
+            f'align-items: baseline; gap: 12px; padding: 4px 0; '
+            f'border-bottom: 1px solid var(--border);">'
+            f'<span style="font-size: 13px;">'
+            f'<strong>{r.get("title") or "(no title)"}</strong>'
+            f'<span style="color: var(--text-dim);"> · {r.get("company") or "—"}</span>'
+            f'</span>'
+            f'<span class="mono" style="font-size: 12px; color: var(--accent); '
+            f'flex-shrink: 0;">{pct} match</span>'
+            f'</div>'
+        )
 
 
 def render_contact_section(row: dict, refresh_list_fn):
@@ -1469,6 +1542,7 @@ def render_market_tab():
             "gemini":    "Gemini",
             "gemma":     "Gemma 4 26B (free)",
             "anthropic": "Claude (paid)",
+            "openai":    "OpenAI GPT (paid)",
             "lmstudio":  "LM Studio (local)",
         }
         gemini_models_pretty = {
@@ -1497,6 +1571,8 @@ def render_market_tab():
                     c.get("brain2_anthropic_model", ""),
                 )
                 label = f"{label} — {sub}"
+            elif b == "openai":
+                label = f"{label} — {c.get('brain2_openai_model', 'gpt-5.5')}"
             return label
 
         with ui.row().style("gap: 12px; align-items: center; margin-bottom: 8px; "
@@ -1549,6 +1625,11 @@ def render_market_tab():
             ui.html(
                 '<div style="font-size: 12px; color: var(--maybe);">'
                 '⚠ ANTHROPIC_API_KEY not set in keys.py — chat will fail.</div>'
+            )
+        if not keys.get("openai") and _b == "openai":
+            ui.html(
+                '<div style="font-size: 12px; color: var(--maybe);">'
+                '⚠ OPENAI_API_KEY not set in keys.py — chat will fail.</div>'
             )
         if _b == "lmstudio":
             ui.html(
@@ -1766,6 +1847,7 @@ def render_setup_tab():
                 f'<div class="mono" style="font-size: 12px; line-height: 1.8;">'
                 f'GOOGLE_API_KEY    = "{"*" * 20 if keys["google"] else "(not set)"}"'
                 f'<br>ANTHROPIC_API_KEY = "{"*" * 20 if keys.get("anthropic") else "(not set, optional)"}"'
+                f'<br>OPENAI_API_KEY    = "{"*" * 20 if keys.get("openai") else "(not set, optional)"}"'
                 f'<br>GITHUB_PAT        = "{"*" * 20 if keys["github"] else "(not set, optional)"}"'
                 f'</div>'
             )
@@ -2003,6 +2085,7 @@ def render_setup_tab():
                 "gemini":    "Gemini (paid, web search, recommended)",
                 "gemma":     "Gemma 4 26B (free, no web search)",
                 "anthropic": "Anthropic Claude (paid)",
+                "openai":    "OpenAI GPT (paid)",
                 "lmstudio":  "LM Studio (local, no web search)",
             },
             value=cfg["brain2_backend"],
@@ -2031,6 +2114,15 @@ def render_setup_tab():
                 },
                 value=cfg.get("brain2_anthropic_model", "claude-sonnet-4-6"),
             ).style("min-width: 360px;")
+        with ui.column().style("gap: 8px; margin-top: 8px;") as b2_openai_box:
+            b2_openai_model = ui.select(
+                {
+                    "gpt-5.5":      "GPT-5.5 (flagship)",
+                    "gpt-5.4-mini": "GPT-5.4 Mini (fast, cheap)",
+                    "gpt-5.4-nano": "GPT-5.4 Nano (fastest)",
+                },
+                value=cfg.get("brain2_openai_model", "gpt-5.5"),
+            ).style("min-width: 360px;")
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_lmstudio_box:
             b2_url = ui.input(label="LM Studio URL",
                               value=cfg["brain2_lmstudio_url"])\
@@ -2044,6 +2136,7 @@ def render_setup_tab():
             b2_gemini_box.set_visibility(sel == "gemini")
             b2_gemma_box.set_visibility(sel == "gemma")
             b2_anthropic_box.set_visibility(sel == "anthropic")
+            b2_openai_box.set_visibility(sel == "openai")
             b2_lmstudio_box.set_visibility(sel == "lmstudio")
 
         _refresh_b2_visibility()
@@ -2073,6 +2166,7 @@ def render_setup_tab():
                 "brain2_gemini_model": b2_gem_model.value,
                 "brain2_gemma_model": b2_gemma_model.value,
                 "brain2_anthropic_model": b2_anthropic_model.value,
+                "brain2_openai_model": b2_openai_model.value,
                 "brain2_lmstudio_url": b2_url.value,
                 "brain2_lmstudio_model": b2_model.value,
             }
@@ -2081,6 +2175,73 @@ def render_setup_tab():
 
         ui.button("Save Settings", on_click=do_save).classes("btn-primary")\
             .style("margin-top: 12px; width: 200px;")
+
+        # ── Embeddings (RAG) ────────────────────────────────────────────────────
+        ui.html('<div class="section-title" style="margin-top: 24px;">Embeddings (RAG)</div>')
+        ui.html(
+            '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
+            'Powers the "Similar Past Applications" panel on each job. New jobs are '
+            'embedded automatically during a scan; use this to embed jobs that '
+            'predate the feature. Idempotent — already-embedded jobs are skipped.</div>'
+        )
+        if not database.RAG_AVAILABLE:
+            ui.html(
+                '<div style="font-size: 12px; color: var(--maybe);">'
+                'sqlite-vec extension is unavailable, so RAG is disabled. '
+                'Install it with <span class="mono">pip install sqlite-vec</span> '
+                'and restart the dashboard.</div>'
+            )
+        else:
+            backfill_status = ui.label("").style(
+                "font-size: 12px; color: var(--text-dim);"
+            )
+            backfill_btn = ui.button("Backfill embeddings for existing jobs")\
+                .classes("btn-ghost").style("font-size: 12px;")
+            _bf = {"done": 0, "total": 0, "running": False}
+
+            def _bf_progress(done, total):
+                _bf["done"], _bf["total"] = done, total
+
+            async def do_backfill():
+                if _bf["running"]:
+                    return
+                _bf["running"] = True
+                _bf["done"], _bf["total"] = 0, 0
+                try:
+                    backfill_btn.props("loading")
+                    backfill_btn.disable()
+                except RuntimeError:
+                    pass
+
+                def _tick():
+                    if _bf["total"]:
+                        backfill_status.set_text(
+                            f"Embedding… {_bf['done']}/{_bf['total']}"
+                        )
+                timer = ui.timer(0.4, _tick)
+
+                embedded, total = await run_in_thread(
+                    embeddings.backfill_embeddings, _bf_progress
+                )
+
+                _bf["running"] = False
+                try:
+                    timer.deactivate()
+                    backfill_btn.enable()
+                    backfill_btn.props(remove="loading")
+                    if total == 0:
+                        backfill_status.set_text("All jobs already embedded.")
+                    else:
+                        backfill_status.set_text(
+                            f"Done. Embedded {embedded} of {total} job(s)."
+                        )
+                except RuntimeError:
+                    pass
+                safe_notify(
+                    f"Backfill complete: {embedded} embedded.", type="positive"
+                )
+
+            backfill_btn.on("click", lambda _: do_backfill())
 
         # ── Danger zone ───────────────────────────────────────────────────────
         ui.html('<div class="section-title" style="margin-top: 24px; color: var(--bad);">Danger Zone</div>')
@@ -2105,6 +2266,8 @@ def render_setup_tab():
                             conn.execute("DELETE FROM jobs")
                             conn.execute("DELETE FROM market_snapshots")
                             conn.execute("DELETE FROM jobs_fts")
+                            if database.RAG_AVAILABLE:
+                                conn.execute("DELETE FROM job_embeddings")
                             # Note: brain2_messages is NOT cleared here.
                             # Brain 2 chat history is independent of the jobs
                             # database. Use the dedicated 'Clear Brain 2 Chat'

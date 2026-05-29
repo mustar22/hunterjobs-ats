@@ -55,9 +55,10 @@ def load_keys() -> dict:
         return {
             "google": getattr(keys, "GOOGLE_API_KEY", ""),
             "anthropic": getattr(keys, "ANTHROPIC_API_KEY", ""),
+            "openai": getattr(keys, "OPENAI_API_KEY", ""),
         }
     except ImportError:
-        return {"google": "", "anthropic": ""}
+        return {"google": "", "anthropic": "", "openai": ""}
 
 
 # ── system prompt: Brain 2 self-awareness ─────────────────────────────────────
@@ -498,6 +499,8 @@ def chat_turn(user_message: str, backend: str | None = None) -> str:
     try:
         if backend == "anthropic":
             final_text = _chat_anthropic(messages_for_llm, cfg, keys)
+        elif backend == "openai":
+            final_text = _chat_openai(messages_for_llm, cfg, keys)
         elif backend == "lmstudio":
             final_text = _chat_lmstudio(messages_for_llm, cfg)
         else:
@@ -732,6 +735,76 @@ def _chat_anthropic(messages_for_llm: list[dict], cfg: dict, keys: dict) -> str:
         "[tool loop exhausted]",
         backend="anthropic",
     )
+    return "[tool loop exhausted]"
+
+
+# ── OpenAI backend ──────────────────────────────────────────────────────────
+def _chat_openai(messages_for_llm: list[dict], cfg: dict, keys: dict) -> str:
+    from openai import OpenAI
+    api_key = keys.get("openai", "")
+    model_name = cfg.get("brain2_openai_model", "gpt-5.5")
+
+    client = OpenAI(api_key=api_key)
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "query_jobs",
+            "description": QUERY_JOBS_DESCRIPTION,
+            "parameters": QUERY_JOBS_PARAMETERS,
+        },
+    }]
+
+    for _iter in range(5):
+        msgs = _msgs_to_openai(
+            [messages_for_llm[0]] + load_messages(include_hidden=False)
+        )
+
+        def _call():
+            return client.chat.completions.create(
+                model=model_name,
+                messages=msgs,
+                tools=tools,
+                temperature=0.3,
+                timeout=90.0,
+            )
+        response = _run_with_timeout(_call, 95.0)
+        choice = response.choices[0].message
+
+        text = choice.content or ""
+        tool_calls = []
+        if getattr(choice, "tool_calls", None):
+            for tc in choice.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "args": args,
+                })
+
+        if not tool_calls:
+            save_message("assistant", text, backend="openai")
+            return text
+
+        save_message(
+            "assistant", text,
+            backend="openai", tool_calls=tool_calls,
+        )
+        for tc in tool_calls:
+            if tc["name"] == "query_jobs":
+                result = run_query_jobs_tool(tc["args"].get("sql", ""))
+            else:
+                result = json.dumps({"error": f"Unknown tool: {tc['name']}"})
+            save_message(
+                "tool", result,
+                backend="openai",
+                tool_name=tc["name"], tool_args=tc["args"],
+            )
+
+    save_message("assistant", "[tool loop exhausted]", backend="openai")
     return "[tool loop exhausted]"
 
 

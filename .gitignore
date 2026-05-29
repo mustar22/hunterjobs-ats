@@ -1,24 +1,31 @@
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# secrets
+# secrets — NEVER commit
 keys.py
 
-# state
+# state / runtime data (personal)
 db/
 *.db
 *.db-wal
 *.db-shm
 hunterjobs.log
+*.log
 runner_status.json
+.runner_status.*.tmp
+*.tmp
 
-# personal config (default config.json IS committed as a template, but
-# uncomment the next line if you want to keep your live one out of git)
-# config.json
+# python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
 
+# virtual environments
+.venv/
+venv/
+
+# tooling
+.claude/
+
+# editors / OS
 .idea/
 .vscode/
 .DS_Store
-.venv/

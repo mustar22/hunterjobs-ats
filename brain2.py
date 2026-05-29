@@ -48,9 +48,10 @@ def load_keys() -> dict:
         return {
             "google": getattr(keys, "GOOGLE_API_KEY", ""),
             "anthropic": getattr(keys, "ANTHROPIC_API_KEY", ""),
+            "openai": getattr(keys, "OPENAI_API_KEY", ""),
         }
     except ImportError:
-        return {"google": "", "anthropic": ""}
+        return {"google": "", "anthropic": "", "openai": ""}
 
 
 def aggregate_market_data(days: int = 7) -> dict:
@@ -250,6 +251,23 @@ def run_brain2() -> None:
         analysis_text = "".join(
             block.text for block in response.content if block.type == "text"
         )
+
+    elif backend == "openai":
+        runner_status.patch("brain2", phase="calling openai")
+        openai_model = cfg.get("brain2_openai_model", "gpt-5.5")
+        log.info(f"Calling OpenAI: {openai_model}")
+        if not keys.get("openai"):
+            log.error("OPENAI_API_KEY not set in keys.py")
+            runner_status.finish("brain2", error="OPENAI_API_KEY missing")
+            return
+        client = OpenAI(api_key=keys["openai"])
+        response = client.chat.completions.create(
+            model=openai_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            timeout=120.0,
+        )
+        analysis_text = response.choices[0].message.content or ""
 
     elif backend == "gemma":
         runner_status.patch("brain2", phase="calling gemma")

@@ -49,7 +49,40 @@ from openai import OpenAI
 
 from database import get_db_connection, init_db
 from schemas import JobFilter, CompanyResearch, ContactFind
+import embeddings
 import runner_status
+
+# ── JobSpy country-validation monkeypatch ──────────────────────────────────────
+# Bug (JobSpy 1.1.82): with linkedin_fetch_description=True, JobSpy parses each
+# individual posting's location string and feeds the parsed country into
+# Country.from_string() (jobspy/model.py:167). Postings in countries JobSpy
+# doesn't enumerate (e.g. "bosnia and herzegovina", "moldova") raise
+# ValueError("Invalid country string: ..."), which aborts the *entire* scrape —
+# so a single foreign-location job kills a high-volume LinkedIn run.
+#
+# We scrape LinkedIn only, and LinkedIn ignores the country parameter entirely
+# (country is consumed solely by the Indeed/Glassdoor backends). So coercing an
+# unrecognized country to WORLDWIDE — the enum's own internal-for-linkedin
+# default — has zero functional downside for us and simply lets the scrape
+# continue past foreign-location postings.
+#
+# We patch at runtime here rather than editing the installed package so the fix
+# stays portable across machines/venvs. The safe_scrape() retry loop below
+# remains as a secondary net. REMOVE this once JobSpy handles unknown countries
+# gracefully upstream.
+from jobspy.model import Country as _JobSpyCountry
+
+_orig_country_from_string = _JobSpyCountry.from_string
+
+
+def _safe_country_from_string(country_str: str):
+    try:
+        return _orig_country_from_string(country_str)
+    except ValueError:
+        return _JobSpyCountry.WORLDWIDE
+
+
+_JobSpyCountry.from_string = staticmethod(_safe_country_from_string)
 
 # ── logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -615,7 +648,8 @@ def load_job(conn, job_id: str) -> dict | None:
 # ── JobSpy wrapper with defensive country retry ───────────────────────────────
 def safe_scrape(term: str, sources: list[str], results_wanted: int, hours_old: int):
     """JobSpy occasionally injects random country strings into LinkedIn flow
-    (kenya/iceland bug in 1.1.82). Retry once with country_indeed=None."""
+    (kenya/iceland bug in 1.1.82). Retry up to 4 times; the injected country
+    is random per-call so retrying often gets a clean call."""
     base_kwargs = dict(
         site_name=sources,
         search_term=term,
@@ -625,20 +659,25 @@ def safe_scrape(term: str, sources: list[str], results_wanted: int, hours_old: i
         linkedin_fetch_description=True,
         location="Worldwide",
     )
-    try:
-        return scrape_jobs(country_indeed="worldwide", **base_kwargs)
-    except ValueError as e:
-        if "Invalid country string" in str(e):
-            log.warning(f"JobSpy country bug for '{term}', retrying without country_indeed")
-            try:
-                return scrape_jobs(country_indeed=None, **base_kwargs)
-            except Exception as e2:
-                log.error(f"Retry also failed for '{term}': {e2}")
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return scrape_jobs(country_indeed="worldwide", **base_kwargs)
+        except Exception as e:
+            if "Invalid country string" in str(e):
+                if attempt < max_attempts:
+                    log.warning(
+                        f"JobSpy country bug for '{term}' (attempt {attempt}/{max_attempts}), retrying"
+                    )
+                    time.sleep(1)
+                else:
+                    log.error(
+                        f"JobSpy country bug for '{term}' persisted after {max_attempts} attempts"
+                    )
+                    return None
+            else:
+                log.error(f"Scrape failed for '{term}': {e}")
                 return None
-        raise
-    except Exception as e:
-        log.error(f"Scrape failed for '{term}': {e}")
-        return None
 
 
 # ── Main entry: sequential Stage 1 → Stage 2 → Stage 3 ────────────────────────
@@ -782,6 +821,9 @@ def run_brain1() -> None:
                     g1 = gemma1_filter(s1_client, s1_model, s1_backend, desc, profile_text)
                     insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
                     log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
+                    # Embed-on-scrape for RAG "similar past applications".
+                    # Best-effort: a failed embed must never fail the scrape.
+                    embeddings.embed_and_store(conn, job)
                     if g1.verdict == "GOOD":
                         counts["good"] += 1
                         # Update job dict with verdict so stage2 knows it
