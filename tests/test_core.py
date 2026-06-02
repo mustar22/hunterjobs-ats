@@ -158,6 +158,110 @@ class TestSqlGuard:
         assert self._err("WITH x AS (SELECT 1) DELETE FROM jobs")
 
 
+# ── YC source: scrape_yc_jobs output -> JobSpy-style pipeline rows ─────────────
+# The YC scraper is mocked; we only verify the field mapping that lets YC
+# listings flow through the same Stage 1 path as LinkedIn/Indeed.
+class TestYcJobsToRows:
+    SAMPLE = {
+        "title": "Founding ML Engineer",
+        "company": "Acme AI",
+        "location": "Remote (US)",
+        "job_url": "https://jobs.example.com/acme/ml",
+        "job_type": "fulltime",
+        "is_remote": True,
+        "description": "Build LLM pipelines. " * 20,
+        "date_posted": "2026-05-30",
+        "batch": "W25",
+        "team_size": 8,
+        "company_website": "https://acme.ai",
+        "ats": "greenhouse",
+    }
+
+    def test_maps_jobspy_compatible_fields(self):
+        rows = brain1.yc_jobs_to_rows([self.SAMPLE])
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["title"] == "Founding ML Engineer"
+        assert r["company"] == "Acme AI"
+        assert r["location"] == "Remote (US)"
+        assert r["job_url"] == "https://jobs.example.com/acme/ml"
+        assert r["description"].startswith("Build LLM pipelines.")
+        assert r["date_posted"] == "2026-05-30"
+        # YC-specific mapping: tagged source + website -> domain field, no salary.
+        assert r["site"] == "yc"
+        assert r["company_url_direct"] == "https://acme.ai"
+        assert r["min_amount"] is None and r["max_amount"] is None
+        # id left None so downstream builds a stable fallback id.
+        assert r["id"] is None
+
+    def test_missing_fields_default_to_empty(self):
+        rows = brain1.yc_jobs_to_rows([{"title": "X"}])
+        r = rows[0]
+        assert r["company"] == "" and r["job_url"] == "" and r["description"] == ""
+        assert r["site"] == "yc"
+
+    def test_safe_scrape_yc_uses_config_params(self, monkeypatch):
+        captured = {}
+
+        def fake_scrape_yc_jobs(**kwargs):
+            captured.update(kwargs)
+            return [self.SAMPLE]
+
+        # Patch the symbol where safe_scrape_yc imports it from.
+        import sys, types
+        mod = types.ModuleType("ycombinator_jobs_scraper")
+        mod.scrape_yc_jobs = fake_scrape_yc_jobs
+        monkeypatch.setitem(sys.modules, "ycombinator_jobs_scraper", mod)
+
+        cfg = {"use_yc": True, "yc_max_companies": 42,
+               "yc_max_team_size": 15, "yc_years_back": 2}
+        rows = brain1.safe_scrape_yc(cfg)
+        assert captured["max_companies"] == 42
+        assert captured["max_team_size"] == 15
+        assert captured["years_back"] == 2
+        assert rows[0]["site"] == "yc"
+
+    def test_safe_scrape_yc_swallows_errors(self, monkeypatch):
+        def boom(**kwargs):
+            raise RuntimeError("network down")
+
+        import sys, types
+        mod = types.ModuleType("ycombinator_jobs_scraper")
+        mod.scrape_yc_jobs = boom
+        monkeypatch.setitem(sys.modules, "ycombinator_jobs_scraper", mod)
+        # A YC failure must be non-fatal: returns [] rather than raising.
+        assert brain1.safe_scrape_yc({"use_yc": True}) == []
+
+    def test_to_rows_preserves_tristate_is_remote(self):
+        rows = brain1.yc_jobs_to_rows([
+            {"title": "a", "is_remote": True},
+            {"title": "b", "is_remote": False},
+            {"title": "c"},  # missing -> None
+        ])
+        assert [r["is_remote"] for r in rows] == [True, False, None]
+
+
+# ── YC remote-only filter (applied before Stage 1) ────────────────────────────
+class TestYcRemoteFilter:
+    ROWS = [
+        {"title": "remote", "is_remote": True},
+        {"title": "onsite", "is_remote": False},
+        {"title": "unknown", "is_remote": None},
+        {"title": "missing"},  # no is_remote key
+    ]
+
+    def test_drops_only_explicit_false(self):
+        kept = brain1.apply_yc_remote_filter(self.ROWS, remote_only=True)
+        titles = [r["title"] for r in kept]
+        # True and None/missing kept; only explicit False dropped.
+        assert titles == ["remote", "unknown", "missing"]
+        assert "onsite" not in titles
+
+    def test_toggle_off_keeps_everything(self):
+        kept = brain1.apply_yc_remote_filter(self.ROWS, remote_only=False)
+        assert kept == self.ROWS
+
+
 # ── RAG embeddings: build_embedding_text ──────────────────────────────────────
 class TestBuildEmbeddingText:
     def test_format(self):
@@ -295,3 +399,62 @@ class TestFindSimilarApplications:
         )
         # 'x' has no stored embedding -> quiet empty, no error.
         assert embeddings.find_similar_applications(conn, "x") == []
+
+    def test_store_embedding_reembed_is_idempotent(self):
+        # vec0 does not honor INSERT OR REPLACE: a naive re-insert of an existing
+        # job_id raises "UNIQUE constraint failed on job_embeddings primary key".
+        # store_embedding must instead replace cleanly (DELETE-then-INSERT), so a
+        # re-embed updates the vector without error and leaves exactly one row.
+        conn = self._conn()
+        embeddings.store_embedding(conn, "j1", [1.0, 0.0, 0.0])
+        embeddings.store_embedding(conn, "j1", [0.0, 1.0, 0.0])  # must not raise
+        count = conn.execute(
+            "SELECT count(*) FROM job_embeddings WHERE job_id = 'j1'"
+        ).fetchone()[0]
+        assert count == 1
+        # The second vector wins.
+        assert embeddings.get_embedding(conn, "j1") == [0.0, 1.0, 0.0]
+
+
+# ── YC fallback id: distinct postings must not collide on one id ──────────────
+# YC listings have no native id, so brain1 derives one. company+title+date is
+# NOT unique (same role listed for several locations -> identical on all three),
+# so the id must also fold in job_url to stay collision-free yet stable.
+class TestFallbackJobId:
+    def test_distinct_postings_same_company_title_date_dont_collide(self):
+        a = {"company": "Acme", "title": "Engineer", "date_posted": "2026-05-30",
+             "job_url": "https://jobs.example.com/acme/eng-sf"}
+        b = {"company": "Acme", "title": "Engineer", "date_posted": "2026-05-30",
+             "job_url": "https://jobs.example.com/acme/eng-nyc"}
+        assert brain1.fallback_job_id(a) != brain1.fallback_job_id(b)
+
+    def test_same_posting_yields_same_id_across_runs(self):
+        row = {"company": "Acme", "title": "Engineer", "date_posted": "2026-05-30",
+               "job_url": "https://jobs.example.com/acme/eng-sf"}
+        assert brain1.fallback_job_id(row) == brain1.fallback_job_id(dict(row))
+
+    def test_no_url_falls_back_to_company_title_date(self):
+        row = {"company": "Acme", "title": "Engineer", "date_posted": "2026-05-30",
+               "job_url": ""}
+        assert brain1.fallback_job_id(row) == "Acme_Engineer_2026-05-30"
+
+
+# ── source selection: JobSpy sites vs. YC-only ────────────────────────────────
+class TestSourceSelection:
+    def test_empty_sources_with_yc_runs_yc_only_skips_jobspy(self):
+        # YC-only run: nothing for JobSpy, but there IS something to scrape (YC).
+        assert brain1.jobspy_enabled([]) is False
+        assert brain1.has_scrape_source([], True) is True
+
+    def test_empty_sources_without_yc_does_nothing(self):
+        # No JobSpy sites and YC off: genuinely nothing to scrape (warning + exit).
+        assert brain1.jobspy_enabled([]) is False
+        assert brain1.has_scrape_source([], False) is False
+
+    def test_linkedin_only_still_runs_jobspy(self):
+        assert brain1.jobspy_enabled(["linkedin"]) is True
+        assert brain1.has_scrape_source(["linkedin"], False) is True
+
+    def test_linkedin_and_yc_both_run(self):
+        assert brain1.jobspy_enabled(["linkedin"]) is True
+        assert brain1.has_scrape_source(["linkedin"], True) is True

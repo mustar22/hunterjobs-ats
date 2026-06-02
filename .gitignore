@@ -11,6 +11,7 @@ hunterjobs.log
 runner_status.json
 .runner_status.*.tmp
 *.tmp
+.yc_ats_cache.json
 
 # python
 __pycache__/

@@ -645,6 +645,24 @@ def load_job(conn, job_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def fallback_job_id(row) -> str:
+    """Build a stable, collision-free id for scraped rows that lack a native id
+    (YC listings — JobSpy rows already carry a numeric id).
+
+    Two distinct YC postings can share company + title + date: the same role is
+    often listed for several locations, and YC's date_posted is truncated to the
+    day. So ``company_title_date`` alone is NOT unique and two different jobs
+    would collide on one id. We append a short hash of job_url — unique per
+    posting and stable across runs (same posting → same id), which dedup and RAG
+    both rely on."""
+    base = f"{row.get('company')}_{row.get('title')}_{row.get('date_posted')}"
+    url = str(row.get("job_url") or "")
+    if url:
+        suffix = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
+        return f"{base}_{suffix}"
+    return base
+
+
 # ── JobSpy wrapper with defensive country retry ───────────────────────────────
 def safe_scrape(term: str, sources: list[str], results_wanted: int, hours_old: int):
     """JobSpy occasionally injects random country strings into LinkedIn flow
@@ -680,6 +698,82 @@ def safe_scrape(term: str, sources: list[str], results_wanted: int, hours_old: i
                 return None
 
 
+# ── YC startups scraper (company-based, separate from JobSpy) ─────────────────
+def yc_jobs_to_rows(yc_jobs: list[dict]) -> list[dict]:
+    """Convert ycombinator_jobs_scraper output into JobSpy-style row dicts so YC
+    listings flow through the exact same Stage 1 path as LinkedIn/Indeed. YC has
+    no salary or numeric id; we leave id=None so the downstream fallback builds a
+    stable one from company/title/date."""
+    rows = []
+    for j in yc_jobs:
+        rows.append({
+            "id": None,
+            "title": j.get("title") or "",
+            "company": j.get("company") or "",
+            "company_url_direct": j.get("company_website") or "",
+            "location": j.get("location") or "",
+            "job_type": j.get("job_type") or "",
+            "min_amount": None,
+            "max_amount": None,
+            "currency": "",
+            "site": "yc",
+            "job_url": j.get("job_url") or "",
+            "description": j.get("description") or "",
+            "date_posted": str(j.get("date_posted") or ""),
+            # Preserve YC's tri-state remote flag (True/False/None) for the
+            # pre-Stage-1 remote filter. None = unknown.
+            "is_remote": j.get("is_remote"),
+        })
+    return rows
+
+
+def apply_yc_remote_filter(rows: list[dict], remote_only: bool) -> list[dict]:
+    """Drop YC rows explicitly marked non-remote. Unknown (is_remote None/missing)
+    is kept — we don't want to lose genuinely-remote jobs that just didn't set the
+    flag. No-op when remote_only is False."""
+    if not remote_only:
+        return rows
+    return [r for r in rows if r.get("is_remote") is not False]
+
+
+def safe_scrape_yc(cfg: dict):
+    """Scrape small early-stage YC startups once (company-based, not per-term).
+    Any failure is non-fatal and returns [] — a YC error must never kill the
+    LinkedIn/Indeed scrape (mirrors the JobSpy country-bug handling)."""
+    try:
+        from ycombinator_jobs_scraper import scrape_yc_jobs
+    except Exception as e:
+        log.error(f"YC scraper unavailable (skipping): {e}")
+        return []
+    try:
+        # keyword left None on purpose: YC's keyword is a crude single-substring
+        # title filter, unsuited to our multi-word search phrases. Stage 1's LLM
+        # does the real GOOD/MAYBE/BAD filtering on the description instead.
+        jobs = scrape_yc_jobs(
+            max_companies=int(cfg.get("yc_max_companies", 100)),
+            max_team_size=int(cfg.get("yc_max_team_size", 50)),
+            years_back=int(cfg.get("yc_years_back", 3)),
+            keyword=None,
+        )
+        return yc_jobs_to_rows(jobs)
+    except Exception as e:
+        log.error(f"YC scrape failed (skipping): {e}")
+        return []
+
+
+# ── Source selection helpers ──────────────────────────────────────────────────
+def jobspy_enabled(sources: list[str]) -> bool:
+    """True when at least one JobSpy site (LinkedIn/Indeed) is selected.
+    An empty list is legitimate (YC-only run) and means skip the JobSpy term loop."""
+    return bool(sources)
+
+
+def has_scrape_source(sources: list[str], use_yc: bool) -> bool:
+    """True when there is anything to scrape at all — JobSpy sites or YC.
+    When both are off there is genuinely nothing to do (vs. silently forcing LinkedIn)."""
+    return bool(sources) or bool(use_yc)
+
+
 # ── Main entry: sequential Stage 1 → Stage 2 → Stage 3 ────────────────────────
 def run_brain1() -> None:
     cfg = load_config()
@@ -693,6 +787,7 @@ def run_brain1() -> None:
         t.strip() for t in cfg.get("hard_rejects", "").splitlines() if t.strip()
     ]
     sources = cfg.get("sources", ["linkedin"])
+    use_yc = bool(cfg.get("use_yc"))
     results_wanted = int(cfg.get("results_wanted", 100))
     hours_old = int(cfg.get("hours_old", 72))
     github_pat = keys.get("github", "")
@@ -706,8 +801,21 @@ def run_brain1() -> None:
     log.info(f"Brain 1 started")
     log.info(f"Stage 1 (filter):   backend={s1_backend} model={s1_model}")
     log.info(f"Stage 2/3 (enrich): backend={s23_backend} model={s23_model}")
-    log.info(f"Terms: {len(search_terms)} | Rejects: {len(hard_rejects)} | Sources: {sources}")
+    log.info(f"Terms: {len(search_terms)} | Rejects: {len(hard_rejects)} | Sources: {sources} | YC: {use_yc}")
     log.info("=" * 60)
+
+    # ── Guard: nothing to scrape ──────────────────────────────────────────────
+    # An empty JobSpy source list is legitimate when YC is enabled (YC-only run).
+    # But if BOTH the JobSpy sites and YC are off there is genuinely nothing to do —
+    # log a clear warning and exit instead of silently forcing LinkedIn back in.
+    if not has_scrape_source(sources, use_yc):
+        log.warning(
+            "No scrape sources enabled: JobSpy site list is empty and YC is off. "
+            "Nothing to scrape — enable LinkedIn/Indeed or Y Combinator in Setup."
+        )
+        runner_status.start("brain1")
+        runner_status.finish("brain1", error="no sources enabled")
+        return
 
     init_db()
     runner_status.start("brain1")
@@ -743,12 +851,108 @@ def run_brain1() -> None:
 
     # GOOD jobs collected during Stage 1, processed after Stage 1 completes.
     good_jobs: list[dict] = []
+    # Cross-source dedup by job_url (LinkedIn/Indeed/YC can overlap within a run).
+    seen_urls: set[str] = set()
 
     conn = get_db_connection()
     last_heartbeat = time.monotonic()
     aborted = False
+
+    def _process_row(row, progress_label: str) -> bool:
+        """Run one scraped row (JobSpy Series or YC dict) through hard-reject +
+        Stage 1. Returns False if the dashboard heartbeat died and we should
+        abort the whole scrape; True otherwise (including normal skips)."""
+        nonlocal last_heartbeat
+        # Heartbeat check every iteration
+        if not runner_status.dashboard_is_alive(max_age_seconds=90):
+            log.warning("Dashboard heartbeat lost (>90s). Self-terminating.")
+            return False
+        # Periodic status heartbeat from us
+        if time.monotonic() - last_heartbeat > 20:
+            runner_status.patch("brain1")
+            last_heartbeat = time.monotonic()
+        job_id = str(row.get("id") or fallback_job_id(row))
+        desc = str(row.get("description") or "")
+        if not desc or len(desc) < 100:
+            return True
+        url = str(row.get("job_url") or "")
+        if url and url in seen_urls:
+            return True
+        if url:
+            seen_urls.add(url)
+        dhash = description_hash(desc)
+        process, is_new = should_process(conn, job_id, dhash)
+        if not process:
+            return True
+
+        job = {
+            "id": job_id,
+            "title": str(row.get("title") or ""),
+            "company": str(row.get("company") or ""),
+            "domain": str(row.get("company_url_direct") or row.get("company_url") or ""),
+            "location": str(row.get("location") or ""),
+            "job_type": str(row.get("job_type") or ""),
+            "salary_min": row.get("min_amount"),
+            "salary_max": row.get("max_amount"),
+            "currency": str(row.get("currency") or ""),
+            "source": str(row.get("site") or ""),
+            "url": url,
+            "description": desc,
+            "date_posted": str(row.get("date_posted") or ""),
+            "date_scraped": datetime.now(timezone.utc).isoformat(),
+            "description_hash": dhash,
+        }
+
+        counts["scraped"] += 1
+
+        # ── hard reject ──
+        # Check title + company + description; many staffing firms
+        # have giveaway company names but normal-sounding job text.
+        reject_text = f"{job['title']} {job['company']} {desc}"
+        reject_kw = hard_reject_check(reject_text, hard_rejects)
+        if reject_kw:
+            insert_job_with_verdict(conn, job, "BAD", f"hard_reject: {reject_kw}")
+            counts["hard_rej"] += 1
+            runner_status.patch("brain1", **counts)
+            return True
+
+        # ── Gemma 1 filter ──
+        runner_status.patch(
+            "brain1",
+            stage1=f"filter {counts['scraped']} {progress_label}",
+        )
+        try:
+            g1 = gemma1_filter(s1_client, s1_model, s1_backend, desc, profile_text)
+            insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
+            log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
+            # Embed-on-scrape for RAG "similar past applications".
+            # Best-effort: a failed embed must never fail the scrape.
+            embeddings.embed_and_store(conn, job)
+            if g1.verdict == "GOOD":
+                counts["good"] += 1
+                # Update job dict with verdict so stage2 knows it
+                job["verdict"] = "GOOD"
+                good_jobs.append(job)
+            elif g1.verdict == "MAYBE":
+                counts["maybe"] += 1
+            else:
+                counts["bad"] += 1
+            runner_status.patch("brain1", **counts)
+
+        except Exception as e:
+            log.error(f"[stage1] Gemma1 failed for {job_id}: {e}")
+            insert_job_with_verdict(conn, job, "BAD", f"gemma1_error: {e}")
+            counts["bad"] += 1
+            time.sleep(1)
+        return True
+
     try:
-        for term_idx, term in enumerate(search_terms, 1):
+        # JobSpy term loop runs only when at least one JobSpy site is selected.
+        # An empty source list (YC-only run) skips it entirely — no empty JobSpy call.
+        scrape_terms = list(enumerate(search_terms, 1)) if jobspy_enabled(sources) else []
+        if not scrape_terms:
+            log.info("[stage1] No JobSpy sources selected; skipping LinkedIn/Indeed scrape.")
+        for term_idx, term in scrape_terms:
             if not runner_status.dashboard_is_alive(max_age_seconds=90):
                 log.warning("Dashboard heartbeat lost (>90s). Self-terminating.")
                 aborted = True
@@ -762,87 +966,33 @@ def run_brain1() -> None:
             if df is None or len(df) == 0:
                 continue
 
+            progress = f"({term_idx}/{len(search_terms)})"
             for _, row in df.iterrows():
-                # Heartbeat check every iteration
-                if not runner_status.dashboard_is_alive(max_age_seconds=90):
-                    log.warning("Dashboard heartbeat lost (>90s). Self-terminating.")
+                if not _process_row(row, progress):
                     aborted = True
                     break
-                # Periodic status heartbeat from us
-                if time.monotonic() - last_heartbeat > 20:
-                    runner_status.patch("brain1")
-                    last_heartbeat = time.monotonic()
-                job_id = str(row.get("id") or f"{row.get('company')}_{row.get('title')}_{row.get('date_posted')}")
-                desc = str(row.get("description") or "")
-                if not desc or len(desc) < 100:
-                    continue
-                dhash = description_hash(desc)
-                process, is_new = should_process(conn, job_id, dhash)
-                if not process:
-                    continue
-
-                job = {
-                    "id": job_id,
-                    "title": str(row.get("title") or ""),
-                    "company": str(row.get("company") or ""),
-                    "domain": str(row.get("company_url_direct") or row.get("company_url") or ""),
-                    "location": str(row.get("location") or ""),
-                    "job_type": str(row.get("job_type") or ""),
-                    "salary_min": row.get("min_amount"),
-                    "salary_max": row.get("max_amount"),
-                    "currency": str(row.get("currency") or ""),
-                    "source": str(row.get("site") or ""),
-                    "url": str(row.get("job_url") or ""),
-                    "description": desc,
-                    "date_posted": str(row.get("date_posted") or ""),
-                    "date_scraped": datetime.now(timezone.utc).isoformat(),
-                    "description_hash": dhash,
-                }
-
-                counts["scraped"] += 1
-
-                # ── hard reject ──
-                # Check title + company + description; many staffing firms
-                # have giveaway company names but normal-sounding job text.
-                reject_text = f"{job['title']} {job['company']} {desc}"
-                reject_kw = hard_reject_check(reject_text, hard_rejects)
-                if reject_kw:
-                    insert_job_with_verdict(conn, job, "BAD", f"hard_reject: {reject_kw}")
-                    counts["hard_rej"] += 1
-                    runner_status.patch("brain1", **counts)
-                    continue
-
-                # ── Gemma 1 filter ──
-                runner_status.patch(
-                    "brain1",
-                    stage1=f"filter {counts['scraped']} ({term_idx}/{len(search_terms)})",
-                )
-                try:
-                    g1 = gemma1_filter(s1_client, s1_model, s1_backend, desc, profile_text)
-                    insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
-                    log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
-                    # Embed-on-scrape for RAG "similar past applications".
-                    # Best-effort: a failed embed must never fail the scrape.
-                    embeddings.embed_and_store(conn, job)
-                    if g1.verdict == "GOOD":
-                        counts["good"] += 1
-                        # Update job dict with verdict so stage2 knows it
-                        job["verdict"] = "GOOD"
-                        good_jobs.append(job)
-                    elif g1.verdict == "MAYBE":
-                        counts["maybe"] += 1
-                    else:
-                        counts["bad"] += 1
-                    runner_status.patch("brain1", **counts)
-
-                except Exception as e:
-                    log.error(f"[stage1] Gemma1 failed for {job_id}: {e}")
-                    insert_job_with_verdict(conn, job, "BAD", f"gemma1_error: {e}")
-                    counts["bad"] += 1
-                    time.sleep(1)
 
             if aborted:
                 break
+
+        # ── YC startups (company-based, scraped once — not per term) ──────────
+        if not aborted and cfg.get("use_yc"):
+            runner_status.patch("brain1", stage1="scraping Y Combinator startups")
+            log.info("[stage1] Scraping Y Combinator startups")
+            yc_rows = safe_scrape_yc(cfg)
+            log.info(f"[stage1] YC returned {len(yc_rows)} listings")
+            # Drop non-remote YC jobs before Stage 1 so they never hit Gemma.
+            if cfg.get("yc_remote_only", True):
+                before = len(yc_rows)
+                yc_rows = apply_yc_remote_filter(yc_rows, True)
+                log.info(
+                    f"[stage1] YC remote filter: dropped {before - len(yc_rows)} "
+                    f"non-remote, kept {len(yc_rows)}"
+                )
+            for row in yc_rows:
+                if not _process_row(row, "(YC)"):
+                    aborted = True
+                    break
 
         # ── Stage 1 done; start Stage 2 on collected GOODs ────────────────────
         if aborted:

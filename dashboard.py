@@ -62,6 +62,12 @@ DEFAULT_CONFIG = {
     "hard_rejects": "US citizenship required\nW2 only\nsecurity clearance",
     "salary_floor": 4500,
     "sources": ["linkedin"],
+    # YC startups are company-based, scraped separately from JobSpy sites.
+    "use_yc": False,
+    "yc_max_companies": 100,
+    "yc_max_team_size": 50,
+    "yc_years_back": 3,
+    "yc_remote_only": True,
     "results_wanted": 100,
     "hours_old": 72,
     "brain1_backend": "gemma",
@@ -688,6 +694,26 @@ def verdict_pill(verdict: str, reject_reason: str = "") -> str:
     return f'<span class="pill {cls}">{verdict}</span>'
 
 
+def source_pill(source: str) -> str:
+    """Brand-colored badge showing where a job came from. Reuses the .pill
+    geometry; brand hexes are set inline since they aren't theme variables."""
+    brands = {
+        "linkedin": ("LinkedIn", "#0A66C2"),
+        "indeed":   ("Indeed",   "#003A9B"),
+        "yc":       ("YC",       "#FF6600"),
+    }
+    key = (source or "").strip().lower()
+    if key in brands:
+        label, color = brands[key]
+        return (
+            f'<span class="pill" style="color: #fff; background: {color}; '
+            f'border: 1px solid {color};">{label}</span>'
+        )
+    # Unknown/missing → neutral gray pill (theme-consistent), raw value or em dash.
+    label = (source or "").strip() or "—"
+    return f'<span class="pill pill-unc">{label}</span>'
+
+
 def signal_pill(signal: str, culture_flags_json: str = "[]") -> str:
     # If staffing/labeling was flagged, override the 'REAL' pill — REAL is
     # misleading when the company is a real-but-staffing firm.
@@ -1072,6 +1098,7 @@ def render_job_row(row: dict, refresh_list_fn):
                 )
 
             with ui.row().style("gap: 6px; align-items: center; flex-shrink: 0;"):
+                ui.html(source_pill(row.get("source") or ""))
                 ui.html(verdict_pill(
                     row.get("verdict") or "—",
                     row.get("reject_reason") or "",
@@ -2020,9 +2047,17 @@ def render_setup_tab():
 
         ui.html('<div class="section-title">Sources</div>')
         sources_set = set(cfg["sources"])
-        with ui.row().style("gap: 14px;"):
+        with ui.row().style("gap: 14px; align-items: center;"):
             linkedin_cb = ui.checkbox("LinkedIn", value=("linkedin" in sources_set))
             indeed_cb = ui.checkbox("Indeed", value=("indeed" in sources_set))
+            # YC startups are company-based, scraped separately from JobSpy sites.
+            yc_cb = ui.checkbox("Y Combinator startups", value=bool(cfg.get("use_yc")))
+            yc_remote_cb = ui.checkbox("YC remote only",
+                                       value=bool(cfg.get("yc_remote_only", True)))
+            yc_team_in = ui.number(label="YC max team size",
+                                   value=cfg.get("yc_max_team_size", 50),
+                                   step=10, min=1, max=500)\
+                .props("outlined dense").style("width: 160px;")
 
         # Backend selectors
         ui.html('<div class="section-title">Brain 1 — Stage 1 Backend (job filter, high volume)</div>')
@@ -2148,6 +2183,9 @@ def render_setup_tab():
             if indeed_cb.value: sources.append("indeed")
             new_cfg = {
                 **cfg,
+                "use_yc": bool(yc_cb.value),
+                "yc_remote_only": bool(yc_remote_cb.value),
+                "yc_max_team_size": int(yc_team_in.value or 50),
                 "theme": theme_select.value,
                 "profile": profile_ta.value,
                 "search_terms": terms_ta.value,
@@ -2155,7 +2193,9 @@ def render_setup_tab():
                 "salary_floor": int(floor_in.value or 0),
                 "results_wanted": int(rw_in.value or 100),
                 "hours_old": int(ho_in.value or 72),
-                "sources": sources or ["linkedin"],
+                # Save the actual ticked list — an empty list is allowed (YC-only run).
+                # Do NOT coerce back to ["linkedin"]; that silently forces LinkedIn on.
+                "sources": sources,
                 "brain1_stage1_backend": b1s1_select.value,
                 "brain1_stage23_backend": b1s23_select.value,
                 # Keep legacy key in sync for backwards compat (mirrors stage23 choice)
@@ -2214,19 +2254,28 @@ def render_setup_tab():
                     pass
 
                 def _tick():
+                    # Bail if the Setup tab (and our label) has been torn down —
+                    # otherwise the timer fires into a deleted slot.
+                    if backfill_status.is_deleted:
+                        return
                     if _bf["total"]:
                         backfill_status.set_text(
                             f"Embedding… {_bf['done']}/{_bf['total']}"
                         )
                 timer = ui.timer(0.4, _tick)
 
-                embedded, total = await run_in_thread(
-                    embeddings.backfill_embeddings, _bf_progress
-                )
-
-                _bf["running"] = False
                 try:
-                    timer.deactivate()
+                    embedded, total = await run_in_thread(
+                        embeddings.backfill_embeddings, _bf_progress
+                    )
+                finally:
+                    # cancel() (not deactivate()) ends the timer's loop and removes
+                    # the element from its slot, so it can never fire after the slot
+                    # is gone. Runs even if the backfill raises, so no timer leaks.
+                    timer.cancel()
+                    _bf["running"] = False
+
+                try:
                     backfill_btn.enable()
                     backfill_btn.props(remove="loading")
                     if total == 0:

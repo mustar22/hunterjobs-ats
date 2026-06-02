@@ -79,13 +79,20 @@ def embed_job(job: dict) -> list[float] | None:
 
 # ── storage ─────────────────────────────────────────────────────────────────────
 def store_embedding(conn, job_id: str, vector: list[float]) -> None:
-    """Persist one job's vector into the vec0 table; no-op if RAG is disabled."""
+    """Persist one job's vector into the vec0 table; no-op if RAG is disabled.
+
+    vec0 virtual tables do NOT honor ``INSERT OR REPLACE`` — re-inserting an
+    existing primary key raises "UNIQUE constraint failed on job_embeddings
+    primary key" instead of replacing. So we DELETE any existing row for this
+    job_id first, making re-embeds idempotent (a clean vector update) rather
+    than a crash."""
     if not database.RAG_AVAILABLE or vector is None:
         return
     import sqlite_vec
 
+    conn.execute("DELETE FROM job_embeddings WHERE job_id = ?", (job_id,))
     conn.execute(
-        "INSERT OR REPLACE INTO job_embeddings (job_id, embedding) VALUES (?, ?)",
+        "INSERT INTO job_embeddings (job_id, embedding) VALUES (?, ?)",
         (job_id, sqlite_vec.serialize_float32(list(vector))),
     )
     conn.commit()
