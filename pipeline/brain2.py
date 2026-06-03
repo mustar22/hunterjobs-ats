@@ -19,8 +19,8 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 
-from database import get_db_connection, init_db
-import runner_status
+from core.database import get_db_connection, init_db
+import core.runner_status as runner_status
 
 # ── logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -33,7 +33,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+from core.config import CONFIG_PATH
 
 
 def load_config() -> dict:
@@ -338,7 +338,7 @@ def run_brain2() -> None:
     # system prompt each turn with a snapshot summary, but the full text is
     # only available if the user asks.
     try:
-        import brain2_chat
+        from pipeline import brain2_chat
         brain2_chat.save_message(
             role="system",
             content=(

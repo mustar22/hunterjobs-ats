@@ -130,9 +130,12 @@ You can mix and match. The default config uses free Gemma for the high-volume Br
 ```bash
 git clone https://github.com/mustar22/hunterjobs-ats.git
 cd hunterjobs-ats
-pip install -r requirements.txt
+pip install -e .            # installs deps and puts core/pipeline/ui on the path
 cp keys_dummy.py keys.py    # then edit keys.py and add your API key(s)
 ```
+
+(`pip install -e .` reads its dependencies from `requirements.txt`; a plain
+`pip install -r requirements.txt` also works if you just want the deps.)
 
 Then launch with whichever is easier:
 
@@ -175,7 +178,7 @@ Your `keys.py` is gitignored. Don't commit it.
 
 ## Known limitations
 
-- **JobSpy can be flaky** &mdash; LinkedIn occasionally rate-limits, and JobSpy 1.1.82 has a bug where it mis-parses some listings' locations into an invalid-country error that aborts the whole scrape. HunterJobs patches around that at runtime (see the comment block in `brain1.py`), but a search term can still occasionally produce nothing on a given day.
+- **JobSpy can be flaky** &mdash; LinkedIn occasionally rate-limits, and JobSpy 1.1.82 has a bug where it mis-parses some listings' locations into an invalid-country error that aborts the whole scrape. HunterJobs patches around that at runtime (see the comment block in `pipeline/brain1.py`), but a search term can still occasionally produce nothing on a given day.
 - **YC ATS coverage is partial** &mdash; the YC source resolves a company's ATS by matching its slug and checking its website for a board link. Companies on unsupported ATSs (Workday, Rippling) or with JavaScript-only boards are missed. Coverage skews toward companies using Greenhouse / Lever / Ashby.
 - **LinkedIn doesn't always return a posting date or location** &mdash; some rows show blank for those. That's upstream data, not a bug.
 - **Stage 2/3 fail more often than I'd like** &mdash; Gemma 4 sometimes returns malformed JSON or just times out. There are manual retry buttons inside each job's expansion for both.
@@ -215,6 +218,25 @@ Your `keys.py` is gitignored. Don't commit it.
 This is a tool I'm using daily for my own job hunt. If something's broken or weird, open an issue. If you have ideas, also open an issue. If you want to use it and got stuck on setup, definitely open an issue &mdash; the install docs probably need work.
 
 PRs welcome but please open an issue first so we can sync on direction.
+
+---
+
+## Code style
+
+**Comments — lean minimal.** A short header comment per file is welcome. Inside
+the code, comment only the non-obvious: the *why*, not the *what*. No narration,
+no restating code in English, no blow-by-blow. Trust the reader. When in doubt, cut.
+
+**File size — a smell, not a rule.** No hard line cap, but a file sprawling past
+~600–800 lines usually means it's doing too many things. Treat that as a signal to
+split along responsibility seams, not a mechanical limit. Code should document
+itself through structure.
+
+**Structure.** One clear responsibility per file. Prefer small focused modules
+over god-files. The code is split into three packages — `core/` (config, DB,
+schemas, status IPC, embeddings), `pipeline/` (the brains + detached-process
+control), and `ui/` (the NiceGUI dashboard) — with `dashboard.py` as the thin
+entry point that wires them together.
 
 ---
 

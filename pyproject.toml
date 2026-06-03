@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hunterjobs-ats"
+version = "0.4.0"
+description = "Candidate-side ATS: a three-stage local AI pipeline that filters the job market for you."
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+# core/, pipeline/, ui/ are real packages; dashboard.py is the top-level entry
+# module (not part of a package), so it ships as a py-module.
+[tool.setuptools]
+packages = ["core", "pipeline", "ui"]
+py-modules = ["dashboard"]
+
+# Single source of truth for runtime deps stays requirements.txt.
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

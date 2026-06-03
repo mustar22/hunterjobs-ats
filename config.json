@@ -4,9 +4,7 @@
   "search_terms": "AI engineer",
   "hard_rejects": "Staffing\nStaffing agency\nmust be authorized to work in the US\nauthorized to work in the united states\nW2 only\nW-2\nsecurity clearance\nSecret clearance\nTS/SCI\non-site\nPhD required\nPhD is required\nstaffing agency\non behalf of our client\nrecruiting partner\nBairesDev\nTEKsystems\nJobgether\nWebologix\nCrossing Hurdles\nYO HR Consultancy\nRemoteHunter\nJames Search Group\nInterEx Group\nJobs via Dice\nMindrift\nDataAnnotation\nOutlier\nRemotasks\nRLHF trainer\nAI trainer\ndata labeling\ndata annotation\nJoveo\nMercor\nAlignerr\ntalent pool\nconnects talent with\nTuring.com\nJobright\nHire Feed\nQuik Hire\nQuikHire\ninternship\nvolunteer\nunpaid\nequity only\npre-revenue",
   "salary_floor": 5000,
-  "sources": [
-    "linkedin"
-  ],
+  "sources": [],
   "results_wanted": 100,
   "hours_old": 24,
   "brain1_backend": "gemma",
@@ -21,9 +19,9 @@
   "brain2_gemma_model": "gemma-4-26b-a4b-it",
   "brain2_anthropic_model": "claude-haiku-4-5-20251001",
   "brain2_openai_model": "gpt-5.5",
-  "use_yc": false,
+  "use_yc": true,
   "yc_max_companies": 100,
   "yc_max_team_size": 50,
   "yc_years_back": 3,
-  "yc_remote_only": true
+  "yc_remote_only": false
 }

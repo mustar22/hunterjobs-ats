@@ -47,10 +47,10 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 
-from database import get_db_connection, init_db
-from schemas import JobFilter, CompanyResearch, ContactFind
-import embeddings
-import runner_status
+from core.database import get_db_connection, init_db
+from core.schemas import JobFilter, CompanyResearch, ContactFind
+import core.embeddings as embeddings
+import core.runner_status as runner_status
 
 # ── JobSpy country-validation monkeypatch ──────────────────────────────────────
 # Bug (JobSpy 1.1.82): with linkedin_fetch_description=True, JobSpy parses each
@@ -95,7 +95,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+from core.config import CONFIG_PATH
 
 
 # ── config / keys ─────────────────────────────────────────────────────────────

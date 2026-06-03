@@ -20,8 +20,8 @@ import json
 import logging
 import math
 
-import database
-from database import get_db_connection
+from core import database
+from core.database import get_db_connection
 
 log = logging.getLogger(__name__)
 

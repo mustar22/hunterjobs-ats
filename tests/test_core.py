@@ -20,9 +20,9 @@ import pytest
 # brain1 / brain2_chat import LLM SDKs at module load. If those aren't
 # installed in the test environment, skip rather than error — CI installs
 # them via requirements.txt so they'll be present there.
-brain1 = pytest.importorskip("brain1")
-brain2_chat = pytest.importorskip("brain2_chat")
-embeddings = pytest.importorskip("embeddings")
+brain1 = pytest.importorskip("pipeline.brain1")
+brain2_chat = pytest.importorskip("pipeline.brain2_chat")
+embeddings = pytest.importorskip("core.embeddings")
 
 
 # ── hard_reject_check ─────────────────────────────────────────────────────────

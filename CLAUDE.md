@@ -9,6 +9,9 @@ Three-stage AI pipeline per job listing → NiceGUI dashboard at `http://localho
 ## Run
 
 ```bash
+# One-time: install as an editable package (puts core/pipeline/ui on the path)
+pip install -e .
+
 # Dashboard (main entry point)
 python dashboard.py
 
@@ -24,18 +27,37 @@ Tests:
 
 ## Architecture
 
+Packaged via `pyproject.toml` (PEP 621, setuptools). `core/`, `pipeline/`, `ui/`
+are real packages; `dashboard.py` is the top-level entry module (`py-modules`).
+Detached brains are launched as `python -m pipeline.run_brain1` with cwd=root.
+
 ```
-dashboard.py       NiceGUI frontend (FastAPI + Vue under the hood)
-brain1.py          Three-stage pipeline: scrape → filter → research → outreach
-brain2.py          Market analyst: aggregates 7-day data → Gemini snapshot
-brain2_chat.py     Persistent Brain 2 chat with read-only DB tool access
-database.py        SQLite schema init (WAL + FTS5), DB_PATH = db/hunterjobs_ats.db
-schemas.py         Pydantic models for Gemma structured outputs
-runner_status.py   File-based IPC: pipeline status, PID, heartbeat
-run_brain1.py      Entry point for detached Brain 1 process
-run_brain2.py      Entry point for detached Brain 2 process
-config.json        User config (persisted by Setup tab)
-keys.py            API keys — gitignored, copy from keys_dummy.py
+dashboard.py              Entry point: bootstraps config/DB/heartbeat, defines the @ui.page("/"), runs the server
+
+core/                     Leaf layer — no deps on pipeline/ui
+  config.py               Single source of truth: DEFAULT_CONFIG, CONFIG_PATH, load/save_config, load_keys
+  database.py             SQLite schema init (WAL + FTS5), DB_PATH = db/hunterjobs_ats.db
+  schemas.py              Pydantic models for Gemma structured outputs
+  runner_status.py        File-based IPC: pipeline status, PID, heartbeat (runner_status.json)
+  embeddings.py           RAG: Gemini embeddings + sqlite-vec for "similar past applications"
+
+pipeline/                 Brains + process control
+  brain1.py               Three-stage pipeline: scrape → filter → research → outreach
+  brain2.py               Market analyst: aggregates 7-day data → Gemini snapshot
+  brain2_chat.py          Persistent Brain 2 chat with read-only DB tool access
+  process_control.py      spawn_detached / kill_pid / _is_pid_alive / heartbeat thread
+  run_brain1.py           Detached Brain 1 entry (python -m pipeline.run_brain1)
+  run_brain2.py           Detached Brain 2 entry (python -m pipeline.run_brain2)
+
+ui/                       NiceGUI frontend (FastAPI + Vue under the hood)
+  theme.py                Logo + /static mount, COLOR_SWATCHES, PALETTE_CSS
+  helpers.py              Pills, fmt_ts, status_dot_class, safe_notify, run_in_thread
+  db_queries.py           Dashboard-side DB helpers (fetch_jobs, mark_applied, ...)
+  jobs.py                 Job-row rendering + expandable sections
+  tabs.py                 Applied / Market Analyzer / Logs / Setup tabs
+
+config.json               User config (persisted by Setup tab)
+keys.py                   API keys — gitignored, copy from keys_dummy.py
 ```
 
 ## Brain 1 pipeline
@@ -67,7 +89,7 @@ Brain 1 backends: `gemma` or `lmstudio` (per-stage config: `brain1_stage1_backen
 
 ## Config keys (config.json)
 
-Key defaults live in `DEFAULT_CONFIG` in `dashboard.py`. Notable ones:
+Key defaults live in `DEFAULT_CONFIG` in `core/config.py`. Notable ones:
 
 ```
 brain2_backend          gemini | gemma | anthropic | openai | lmstudio
@@ -113,7 +135,7 @@ OPENAI_API_KEY    = ""   # optional, Brain 2 OpenAI backend
 GITHUB_PAT        = ""   # optional, Stage 3 GitHub OSINT for contact emails
 ```
 
-## Dashboard DB helpers (dashboard.py)
+## Dashboard DB helpers (ui/db_queries.py)
 
 ```
 fetch_jobs(verdicts, query, limit)   filter + FTS search
@@ -125,9 +147,11 @@ update_verdict(job_id, verdict, reason)  manual verdict override (e.g. "manual_b
 
 ## Tests
 
-`tests/test_core.py` — 30 pure-logic unit tests. No LLM calls, no scraping, no UI.
-Covers: `hard_reject_check`, `clean_domain`, `TokenBucket`, `_strip_json_fence`, SQL guard.
-CI: `.github/workflows/test.yml` — Python 3.10 / 3.11 / 3.12 on push to main.
+`tests/test_core.py` — 58 pure-logic unit tests. No LLM calls, no scraping, no UI.
+Covers: `hard_reject_check`, `clean_domain`, `TokenBucket`, `_strip_json_fence`, SQL guard,
+YC row mapping/remote filter, embeddings (cosine/rank/build-text), fallback job IDs, source selection.
+Imports are package-qualified (`pipeline.brain1`, `core.embeddings`); no `sys.path` hack — relies on
+`pip install -e .`. CI: `.github/workflows/test.yml` — Python 3.10 / 3.11 / 3.12 on push to main.
 
 ## v0.2 WIP status (as of 2026-05-28)
 
@@ -144,6 +168,6 @@ Remaining v0.2 items (from README):
 
 - NiceGUI v2 with gothic purple accent (`--accent: #9d6fff`). Geist font for UI, JetBrains Mono for code/logs.
 - Dark/light theme toggle via `data-theme` attribute on `<html>`.
-- All job rows rendered via `render_job_row` → expandable sections → notes + color swatch + action buttons.
-- `safe_notify()` wraps `ui.notify` to not crash when the slot is destroyed during async refresh.
-- Brain processes are fully detached (`spawn_detached`) so browser refresh doesn't kill them.
+- All job rows rendered via `render_job_row` (`ui/jobs.py`) → expandable sections → notes + color swatch + action buttons.
+- `safe_notify()` (`ui/helpers.py`) wraps `ui.notify` to not crash when the slot is destroyed during async refresh.
+- Brain processes are fully detached (`spawn_detached` in `pipeline/process_control.py`) so browser refresh doesn't kill them.

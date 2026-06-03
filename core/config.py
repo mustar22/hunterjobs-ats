@@ -1,0 +1,76 @@
+"""
+core/config.py
+
+Single source of truth for HunterJobs config + API keys.
+
+CONFIG_PATH is anchored explicitly to the repo root (one level up from this
+file, which lives in core/), so it resolves the same regardless of the process
+CWD. Previously this logic was duplicated across dashboard.py, brain1.py,
+brain2.py and brain2_chat.py.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+# core/config.py sits one level deep, so the repo root is two parents up.
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+
+
+DEFAULT_CONFIG = {
+    "theme": "dark",
+    "profile": "",
+    "search_terms": "machine learning engineer remote\ngenerative AI engineer remote",
+    "hard_rejects": "US citizenship required\nW2 only\nsecurity clearance",
+    "salary_floor": 4500,
+    "sources": ["linkedin"],
+    # YC startups are company-based, scraped separately from JobSpy sites.
+    "use_yc": False,
+    "yc_max_companies": 100,
+    "yc_max_team_size": 50,
+    "yc_years_back": 3,
+    "yc_remote_only": True,
+    "results_wanted": 100,
+    "hours_old": 72,
+    "brain1_backend": "gemma",
+    "brain1_stage1_backend": "gemma",
+    "brain1_stage23_backend": "gemma",
+    "brain1_lmstudio_url": "http://localhost:1234/v1",
+    "brain1_lmstudio_model": "",
+    "brain2_backend": "gemini",
+    "brain2_gemini_model": "gemini-3.5-flash",
+    "brain2_gemma_model": "gemma-4-26b-a4b-it",
+    "brain2_anthropic_model": "claude-sonnet-4-6",
+    "brain2_openai_model": "gpt-5.5",
+    "brain2_lmstudio_url": "http://localhost:1234/v1",
+    "brain2_lmstudio_model": "",
+}
+
+
+def load_config() -> dict:
+    if CONFIG_PATH.exists():
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        # fill missing keys
+        for k, v in DEFAULT_CONFIG.items():
+            data.setdefault(k, v)
+        return data
+    CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2))
+    return dict(DEFAULT_CONFIG)
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+
+
+def load_keys() -> dict:
+    try:
+        import keys
+        return {
+            "google": getattr(keys, "GOOGLE_API_KEY", ""),
+            "anthropic": getattr(keys, "ANTHROPIC_API_KEY", ""),
+            "github": getattr(keys, "GITHUB_PAT", ""),
+            "openai": getattr(keys, "OPENAI_API_KEY", ""),
+        }
+    except ImportError:
+        return {"google": "", "anthropic": "", "github": "", "openai": ""}

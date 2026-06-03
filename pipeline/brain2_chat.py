@@ -35,11 +35,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from database import get_db_connection
+from core.database import get_db_connection
 
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+from core.config import CONFIG_PATH
 
 
 # ── config + keys ─────────────────────────────────────────────────────────────
