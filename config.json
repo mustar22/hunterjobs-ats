@@ -21,7 +21,7 @@
   "brain2_gemma_model": "gemma-4-26b-a4b-it",
   "brain2_anthropic_model": "claude-haiku-4-5-20251001",
   "brain2_openai_model": "gpt-5.5",
-  "use_yc": false,
+  "use_yc": true,
   "yc_max_companies": 100,
   "yc_max_team_size": 50,
   "yc_years_back": 3,

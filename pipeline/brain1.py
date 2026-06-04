@@ -49,7 +49,7 @@ from openai import OpenAI
 
 from core.config import OPENROUTER_URL
 from core.database import get_db_connection, init_db
-from core.schemas import JobFilter, CompanyResearch, ContactFind
+from core.schemas import JobFilter, CompanyResearch
 import core.embeddings as embeddings
 import core.runner_status as runner_status
 
@@ -180,39 +180,56 @@ def scrape_markdown(url: str, timeout: int = 5, max_chars: int = 10_000) -> str:
         return f"(fetch failed: {e})"
 
 
-def search_github_email(query_name: str, company: str, github_pat: str) -> str | None:
-    """Best-effort GitHub OSINT for a public commit email."""
-    if not github_pat:
-        return None
+def github_contacts(company: str, github_pat: str, limit: int = 5) -> list[dict]:
+    """Best-effort GitHub OSINT for REAL public commit contacts.
+
+    Returns a deduped list of {name, email, login, source:"github"} drawn from
+    public PushEvent commit authors. Real data only — empty list if nothing found.
+    """
+    if not github_pat or not company:
+        return []
     headers = {
         "Authorization": f"token {github_pat}",
         "Accept": "application/vnd.github.v3+json",
     }
+    contacts: list[dict] = []
+    seen_emails: set[str] = set()
     try:
-        q = f"{query_name} {company}"
         res = requests.get(
-            f"https://api.github.com/search/users?q={q}&per_page=1",
+            f"https://api.github.com/search/users?q={company}&per_page=3",
             headers=headers,
             timeout=5,
         )
-        data = res.json()
-        if not data.get("total_count"):
-            return None
-        username = data["items"][0]["login"]
-        events = requests.get(
-            f"https://api.github.com/users/{username}/events/public",
-            headers=headers,
-            timeout=5,
-        ).json()
-        for event in events:
-            if event.get("type") == "PushEvent":
+        users = res.json().get("items") or []
+        for user in users:
+            login = user.get("login")
+            if not login:
+                continue
+            events = requests.get(
+                f"https://api.github.com/users/{login}/events/public",
+                headers=headers,
+                timeout=5,
+            ).json()
+            for event in events:
+                if event.get("type") != "PushEvent":
+                    continue
                 for commit in event.get("payload", {}).get("commits", []):
-                    email = commit.get("author", {}).get("email", "")
-                    if email and "noreply" not in email:
-                        return email
+                    author = commit.get("author", {}) or {}
+                    email = (author.get("email") or "").strip()
+                    if not email or "noreply" in email or email in seen_emails:
+                        continue
+                    seen_emails.add(email)
+                    contacts.append({
+                        "name": (author.get("name") or "").strip(),
+                        "email": email,
+                        "login": login,
+                        "source": "github",
+                    })
+                    if len(contacts) >= limit:
+                        return contacts
     except Exception:
-        return None
-    return None
+        return contacts
+    return contacts
 
 
 def permutation_emails(name: str, domain: str) -> list[str]:
@@ -239,6 +256,8 @@ def clean_domain(domain: str) -> str:
         .replace("https://", "")
         .replace("http://", "")
         .split("/")[0]
+        .split("?")[0]
+        .split("#")[0]
         .strip()
         .lower()
     )
@@ -498,46 +517,36 @@ def gemma2_research(client, model, backend, company: str, domain: str, stage: st
     return call_gemma(client, model, backend, system, prompt, CompanyResearch, stage=stage)
 
 
-def gemma3_outreach(
-    client, model, backend,
-    company: str, domain: str, company_summary: str,
-    github_pat: str,
-    stage: str = "stage3",
-) -> ContactFind:
+def find_contacts(company: str, domain: str, github_pat: str) -> list[dict]:
+    """Build a contacts list from REAL data only — no LLM, no fabricated names.
+
+    Verified GitHub committers first, then (if the domain is usable) role-based
+    permutation guesses with no person name. Empty list = honest "no contact".
+    Each contact: {name, title, email, source, confidence}.
+    """
+    contacts: list[dict] = []
+
+    for gh in github_contacts(company, github_pat):
+        contacts.append({
+            "name": gh.get("name", ""),
+            "title": "",
+            "email": gh["email"],
+            "source": "github",
+            "confidence": "verified",
+        })
+
     cdomain = clean_domain(domain)
+    if cdomain:
+        for local in ("founder", "hello"):
+            contacts.append({
+                "name": "",
+                "title": "Founder / Eng lead — unverified",
+                "email": f"{local}@{cdomain}",
+                "source": "permutation",
+                "confidence": "pattern",
+            })
 
-    found_email = search_github_email("founder", company, github_pat) if github_pat else None
-    if found_email:
-        email_confidence = "verified"
-        email_source = "github"
-    elif cdomain:
-        found_email = permutation_emails("founder", cdomain)[0]
-        email_confidence = "pattern"
-        email_source = "permutation"
-    else:
-        # No usable domain (only linkedin/indeed URL, or nothing) — don't fabricate.
-        found_email = ""
-        email_confidence = "unconfirmed"
-        email_source = "permutation"
-
-    system = (
-        "You are writing a cold outreach DRAFT for the user to edit before sending. "
-        "Direct, technical, under 4 sentences, no corporate fluff. The email/contact "
-        "fields will be overridden by code - just write a strong outreach_draft and "
-        "guess the most likely decision-maker name/title for a company this size."
-    )
-    prompt = (
-        f"Company: {company}\n"
-        f"What they do: {company_summary or '(no summary available)'}\n"
-        f"Target: founder or engineering lead."
-    )
-
-    result = call_gemma(client, model, backend, system, prompt, ContactFind, stage=stage)
-    # OSINT facts override the LLM's guessed email fields.
-    result.email = found_email
-    result.email_confidence = email_confidence  # type: ignore[assignment]
-    result.email_source = email_source  # type: ignore[assignment]
-    return result
+    return contacts
 
 
 # ── DB write helpers ──────────────────────────────────────────────────────────
@@ -591,24 +600,15 @@ def update_job_research(conn, job_id: str, r: CompanyResearch) -> None:
     conn.commit()
 
 
-def update_job_outreach(conn, job_id: str, c: ContactFind) -> None:
+def update_job_outreach(conn, job_id: str, contacts: list[dict]) -> None:
     conn.execute(
         """
         UPDATE jobs SET
-            contact_name     = ?,
-            contact_title    = ?,
-            contact_email    = ?,
-            email_confidence = ?,
-            email_source     = ?,
-            outreach_draft   = ?,
-            gemma3_done      = 1
+            contacts    = ?,
+            gemma3_done = 1
         WHERE id = ?
         """,
-        (
-            c.name, c.title, c.email,
-            c.email_confidence, c.email_source, c.outreach_draft,
-            job_id,
-        ),
+        (json.dumps(contacts), job_id),
     )
     conn.commit()
 
@@ -1067,16 +1067,13 @@ def run_brain1() -> None:
                     stage3=f"outreach for {job['company']} ({i}/{len(survivors)})",
                 )
                 try:
-                    contact = gemma3_outreach(
-                        s23_client, s23_model, s23_backend,
-                        job["company"], job["domain"],
-                        job.get("company_summary", ""),
-                        github_pat,
+                    contacts = find_contacts(
+                        job["company"], job["domain"], github_pat,
                     )
-                    update_job_outreach(conn, job["id"], contact)
+                    update_job_outreach(conn, job["id"], contacts)
                     log.info(
                         f"[stage3] [{i}/{len(survivors)}] {job['company']} "
-                        f"-> contact via {contact.email_source}"
+                        f"-> {len(contacts)} contact(s)"
                     )
                 except Exception as e:
                     log.error(
@@ -1165,10 +1162,9 @@ def enrich_company_for_job(job_id: str) -> bool:
 
 
 def find_contact_for_job(job_id: str) -> bool:
-    """Run Gemma 3 for a single job. Blocking; for the MAYBE 'Find Contact' button."""
-    cfg = load_config()
+    """Find real contacts for a single job. Blocking; for the 'Find Contact' button.
+    No LLM — GitHub OSINT + permutation only."""
     keys = load_keys()
-    client, model, backend = get_gemma_client(cfg, keys)
     github_pat = keys.get("github", "")
     conn = get_db_connection()
     try:
@@ -1176,15 +1172,11 @@ def find_contact_for_job(job_id: str) -> bool:
         if not job:
             return False
         try:
-            c = gemma3_outreach(
-                client, model, backend,
-                job["company"], job["domain"],
-                job.get("company_summary") or "",
-                github_pat,
-                stage="manual",
+            contacts = find_contacts(
+                job["company"], job["domain"], github_pat,
             )
-            update_job_outreach(conn, job_id, c)
-            log.info(f"[manual stage3] contact for {job['company']} via {c.email_source}")
+            update_job_outreach(conn, job_id, contacts)
+            log.info(f"[manual stage3] {len(contacts)} contact(s) for {job['company']}")
             return True
         except Exception as e:
             log.error(f"[manual stage3] failed for {job_id}: {e}")

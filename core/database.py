@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     gemma2_done      INTEGER DEFAULT 0,
 
     -- Gemma #3 output
-    contact_name     TEXT,
+    contacts         TEXT DEFAULT '',   -- JSON list of {name,title,email,source,confidence}
+    contact_name     TEXT,              -- legacy single-contact cols (unused, kept for back-compat)
     contact_title    TEXT,
     contact_email    TEXT,
     email_confidence TEXT,
@@ -201,6 +202,7 @@ def init_db() -> None:
     for col, col_def in [
         ("notes",     "TEXT DEFAULT ''"),
         ("row_color", "TEXT DEFAULT ''"),
+        ("contacts",  "TEXT DEFAULT ''"),
     ]:
         if col not in existing_cols:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_def}")

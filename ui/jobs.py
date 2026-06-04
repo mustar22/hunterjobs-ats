@@ -507,28 +507,56 @@ def render_similar_applications(row: dict):
         )
 
 
+def _esc(s: str) -> str:
+    return (s or "").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def render_contact_section(row: dict, refresh_list_fn):
-    if row.get("gemma3_done"):
-        name = row.get("contact_name") or "—"
-        title = row.get("contact_title") or "—"
-        email = row.get("contact_email") or "—"
-        conf = row.get("email_confidence") or "—"
-        src = row.get("email_source") or "—"
+    try:
+        contacts = json.loads(row.get("contacts") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        contacts = []
+
+    if contacts:
         ui.html(
-            f'<div style="font-size: 13.5px; margin-bottom: 4px;">'
-            f'<strong>{name}</strong> — {title}</div>'
-            f'<div class="mono" style="font-size: 12px; color: var(--text-dim);">'
-            f'{email} <span style="color: var(--text-faint);">'
-            f'({conf} via {src})</span></div>'
+            '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 6px;">'
+            'Real contacts found &mdash; pick one to reach out to:</div>'
         )
-        ui.textarea(label="Outreach draft", value=row.get("outreach_draft") or "")\
-            .style("margin-top: 10px; width: 100%; "
-                   "font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")\
-            .props("outlined dense autogrow")
+        cards = []
+
+        def make_pick(el):
+            def _pick(_e):
+                for c in cards:
+                    c.style("border: 1px solid var(--border);")
+                el.style("border: 1px solid var(--accent);")
+            return _pick
+
+        for c in contacts:
+            name = _esc(c.get("name")) or "unknown"
+            title = _esc(c.get("title")) or "—"
+            email = _esc(c.get("email")) or "—"
+            conf = _esc(c.get("confidence")) or "—"
+            src = _esc(c.get("source")) or "—"
+            card = ui.element("div").style(
+                "cursor: pointer; padding: 6px 8px; border: 1px solid var(--border); "
+                "border-radius: 6px; margin-bottom: 4px;"
+            )
+            with card:
+                ui.html(
+                    f'<div style="font-size: 13.5px;"><strong>{name}</strong> &mdash; {title}</div>'
+                    f'<div class="mono" style="font-size: 12px; color: var(--text-dim);">'
+                    f'{email} <span style="color: var(--text-faint);">'
+                    f'({conf} via {src})</span></div>'
+                )
+            card.on("click", make_pick(card))
+            cards.append(card)
     else:
-        # Either MAYBE (Stage 3 never ran) or GOOD where Stage 3 failed.
+        # Stage 3 never ran, OR ran and found nothing, OR needs research first.
         with ui.row().style("align-items: center; gap: 10px; flex-wrap: wrap;"):
-            if row.get("verdict") == "GOOD":
+            if row.get("gemma3_done"):
+                ui.label("No contact found. Retry:")\
+                    .style("color: var(--text-dim); font-size: 13px;")
+            elif row.get("verdict") == "GOOD":
                 ui.label("Auto outreach didn't complete. Retry manually:")\
                     .style("color: var(--text-dim); font-size: 13px;")
             elif not row.get("gemma2_done"):
