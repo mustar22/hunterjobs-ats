@@ -17,6 +17,9 @@ from pathlib import Path
 # core/config.py sits one level deep, so the repo root is two parents up.
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
+# OpenRouter is OpenAI-API-compatible; single source of truth for its base URL.
+OPENROUTER_URL = "https://openrouter.ai/api/v1"
+
 
 DEFAULT_CONFIG = {
     "theme": "dark",
@@ -38,20 +41,23 @@ DEFAULT_CONFIG = {
     "brain1_stage23_backend": "gemma",
     "brain1_lmstudio_url": "http://localhost:1234/v1",
     "brain1_lmstudio_model": "",
+    "brain1_openrouter_model": "openrouter/free",
     "brain2_backend": "gemini",
+    # Brain 2 persona/voice (snapshot + chat). Empty = no persona injected.
+    "brain2_persona": "",
     "brain2_gemini_model": "gemini-3.5-flash",
     "brain2_gemma_model": "gemma-4-26b-a4b-it",
     "brain2_anthropic_model": "claude-sonnet-4-6",
     "brain2_openai_model": "gpt-5.5",
     "brain2_lmstudio_url": "http://localhost:1234/v1",
     "brain2_lmstudio_model": "",
+    "brain2_openrouter_model": "openrouter/free",
 }
 
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        # fill missing keys
         for k, v in DEFAULT_CONFIG.items():
             data.setdefault(k, v)
         return data
@@ -71,6 +77,8 @@ def load_keys() -> dict:
             "anthropic": getattr(keys, "ANTHROPIC_API_KEY", ""),
             "github": getattr(keys, "GITHUB_PAT", ""),
             "openai": getattr(keys, "OPENAI_API_KEY", ""),
+            "openrouter": getattr(keys, "OPENROUTER_API_KEY", ""),
         }
     except ImportError:
-        return {"google": "", "anthropic": "", "github": "", "openai": ""}
+        return {"google": "", "anthropic": "", "github": "", "openai": "",
+                "openrouter": ""}

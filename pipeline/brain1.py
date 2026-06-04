@@ -47,29 +47,16 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 
+from core.config import OPENROUTER_URL
 from core.database import get_db_connection, init_db
 from core.schemas import JobFilter, CompanyResearch, ContactFind
 import core.embeddings as embeddings
 import core.runner_status as runner_status
 
-# ── JobSpy country-validation monkeypatch ──────────────────────────────────────
-# Bug (JobSpy 1.1.82): with linkedin_fetch_description=True, JobSpy parses each
-# individual posting's location string and feeds the parsed country into
-# Country.from_string() (jobspy/model.py:167). Postings in countries JobSpy
-# doesn't enumerate (e.g. "bosnia and herzegovina", "moldova") raise
-# ValueError("Invalid country string: ..."), which aborts the *entire* scrape —
-# so a single foreign-location job kills a high-volume LinkedIn run.
-#
-# We scrape LinkedIn only, and LinkedIn ignores the country parameter entirely
-# (country is consumed solely by the Indeed/Glassdoor backends). So coercing an
-# unrecognized country to WORLDWIDE — the enum's own internal-for-linkedin
-# default — has zero functional downside for us and simply lets the scrape
-# continue past foreign-location postings.
-#
-# We patch at runtime here rather than editing the installed package so the fix
-# stays portable across machines/venvs. The safe_scrape() retry loop below
-# remains as a secondary net. REMOVE this once JobSpy handles unknown countries
-# gracefully upstream.
+# JobSpy 1.1.82 bug: an unrecognized posting country (e.g. "moldova") raises in
+# Country.from_string() and aborts the whole scrape. LinkedIn ignores country
+# anyway, so coercing unknowns to WORLDWIDE is safe for our linkedin-only use.
+# Patched at runtime to stay portable across venvs. Remove when fixed upstream.
 from jobspy.model import Country as _JobSpyCountry
 
 _orig_country_from_string = _JobSpyCountry.from_string
@@ -111,9 +98,10 @@ def load_keys() -> dict:
         return {
             "google": getattr(keys, "GOOGLE_API_KEY", ""),
             "github": getattr(keys, "GITHUB_PAT", ""),
+            "openrouter": getattr(keys, "OPENROUTER_API_KEY", ""),
         }
     except ImportError:
-        return {"google": "", "github": ""}
+        return {"google": "", "github": "", "openrouter": ""}
 
 
 # ── LLM client factory ────────────────────────────────────────────────────────
@@ -143,6 +131,15 @@ def get_gemma_client_for_stage(cfg: dict, keys: dict, stage_group: str):
             model_name,
             "lmstudio",
         )
+
+    if backend == "openrouter":
+        model_name = (cfg.get("brain1_openrouter_model") or "openrouter/free").strip()
+        return (
+            OpenAI(base_url=OPENROUTER_URL, api_key=keys.get("openrouter", "")),
+            model_name,
+            "openrouter",
+        )
+
     return genai.Client(api_key=keys["google"]), "gemma-4-26b-a4b-it", "gemma"
 
 
@@ -304,9 +301,8 @@ class TokenBucket:
                     pass
 
 
-# Sequential pipeline: only one stage active at a time, so a single shared
-# bucket sized for the Gemini API Tier 1 limit (16k input TPM, we use 14k to
-# leave headroom for token-count estimation error).
+# One stage active at a time → one shared bucket. 14k of the Gemini Tier 1
+# 16k input TPM, leaving headroom for token-estimation error.
 _SHARED_BUCKET = TokenBucket(tokens_per_minute=14_000)
 _BUCKETS = {
     "stage1": _SHARED_BUCKET,
@@ -328,10 +324,8 @@ def _strip_json_fence(text: str) -> str:
     if not text:
         return text
     t = text.strip()
-    # Strip leading ```json or ```
     if t.startswith("```"):
         t = t.split("\n", 1)[1] if "\n" in t else t[3:]
-    # Strip trailing ```
     if t.endswith("```"):
         t = t[:-3].rstrip()
     return t.strip()
@@ -387,7 +381,7 @@ def call_gemma(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            if backend == "lmstudio":
+            if backend in ("lmstudio", "openrouter"):
                 def _call_lmstudio():
                     response = client.chat.completions.create(
                         model=model,
@@ -426,7 +420,6 @@ def call_gemma(
             msg = str(e)
             # 429 rate limit — respect retryDelay if present, else exponential backoff
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "rate limit" in msg.lower():
-                # Try to extract retryDelay
                 wait_s = 0
                 m = re.search(r"retry in ([\d.]+)s", msg)
                 if m:
@@ -483,9 +476,8 @@ def gemma2_research(client, model, backend, company: str, domain: str, stage: st
     else:
         site_content = scrape_markdown(domain)
 
-    # Note: removed Google search URL fetch — Google blocks scraping and returns
-    # CAPTCHA HTML, which only wastes tokens. Brand info from the company site
-    # is sufficient for the Gemma 2 classifier.
+    # No Google-search fetch: it returns CAPTCHA HTML and wastes tokens; the
+    # company site alone is enough for the classifier.
 
     system = (
         "You are a company OSINT analyst. Be brief and factual.\n"
@@ -514,7 +506,6 @@ def gemma3_outreach(
 ) -> ContactFind:
     cdomain = clean_domain(domain)
 
-    # OSINT first; LLM draft second.
     found_email = search_github_email("founder", company, github_pat) if github_pat else None
     if found_email:
         email_confidence = "verified"
@@ -542,7 +533,7 @@ def gemma3_outreach(
     )
 
     result = call_gemma(client, model, backend, system, prompt, ContactFind, stage=stage)
-    # Override email-related fields with OSINT facts.
+    # OSINT facts override the LLM's guessed email fields.
     result.email = found_email
     result.email_confidence = email_confidence  # type: ignore[assignment]
     result.email_source = email_source  # type: ignore[assignment]
@@ -720,8 +711,7 @@ def yc_jobs_to_rows(yc_jobs: list[dict]) -> list[dict]:
             "job_url": j.get("job_url") or "",
             "description": j.get("description") or "",
             "date_posted": str(j.get("date_posted") or ""),
-            # Preserve YC's tri-state remote flag (True/False/None) for the
-            # pre-Stage-1 remote filter. None = unknown.
+            # Keep YC's tri-state remote flag (True/False/None=unknown) for the pre-Stage-1 filter.
             "is_remote": j.get("is_remote"),
         })
     return rows
@@ -746,9 +736,8 @@ def safe_scrape_yc(cfg: dict):
         log.error(f"YC scraper unavailable (skipping): {e}")
         return []
     try:
-        # keyword left None on purpose: YC's keyword is a crude single-substring
-        # title filter, unsuited to our multi-word search phrases. Stage 1's LLM
-        # does the real GOOD/MAYBE/BAD filtering on the description instead.
+        # keyword=None on purpose: YC's keyword is a crude single-substring title
+        # filter; Stage 1's LLM does the real filtering on the description instead.
         jobs = scrape_yc_jobs(
             max_companies=int(cfg.get("yc_max_companies", 100)),
             max_team_size=int(cfg.get("yc_max_team_size", 50)),
@@ -804,10 +793,8 @@ def run_brain1() -> None:
     log.info(f"Terms: {len(search_terms)} | Rejects: {len(hard_rejects)} | Sources: {sources} | YC: {use_yc}")
     log.info("=" * 60)
 
-    # ── Guard: nothing to scrape ──────────────────────────────────────────────
-    # An empty JobSpy source list is legitimate when YC is enabled (YC-only run).
-    # But if BOTH the JobSpy sites and YC are off there is genuinely nothing to do —
-    # log a clear warning and exit instead of silently forcing LinkedIn back in.
+    # Empty JobSpy sources is legit for a YC-only run; both off = nothing to do,
+    # so exit rather than silently forcing LinkedIn back on.
     if not has_scrape_source(sources, use_yc):
         log.warning(
             "No scrape sources enabled: JobSpy site list is empty and YC is off. "
@@ -826,9 +813,8 @@ def run_brain1() -> None:
         scraped=0, good=0, maybe=0, bad=0, hard_rej=0,
     )
 
-    # ── watchdog: hard-kills this process if dashboard heartbeat dies ─────────
-    # Covers the case where we're stuck mid-scrape inside synchronous jobspy
-    # code that can't respond to cooperative heartbeat checks.
+    # Watchdog: hard-kills us if the dashboard dies while we're stuck inside
+    # synchronous jobspy code that can't reach the cooperative heartbeat checks.
     def _watchdog():
         while True:
             time.sleep(15)
@@ -849,7 +835,6 @@ def run_brain1() -> None:
 
     counts = {"scraped": 0, "good": 0, "maybe": 0, "bad": 0, "hard_rej": 0}
 
-    # GOOD jobs collected during Stage 1, processed after Stage 1 completes.
     good_jobs: list[dict] = []
     # Cross-source dedup by job_url (LinkedIn/Indeed/YC can overlap within a run).
     seen_urls: set[str] = set()
@@ -863,11 +848,9 @@ def run_brain1() -> None:
         Stage 1. Returns False if the dashboard heartbeat died and we should
         abort the whole scrape; True otherwise (including normal skips)."""
         nonlocal last_heartbeat
-        # Heartbeat check every iteration
         if not runner_status.dashboard_is_alive(max_age_seconds=90):
             log.warning("Dashboard heartbeat lost (>90s). Self-terminating.")
             return False
-        # Periodic status heartbeat from us
         if time.monotonic() - last_heartbeat > 20:
             runner_status.patch("brain1")
             last_heartbeat = time.monotonic()
@@ -906,8 +889,7 @@ def run_brain1() -> None:
         counts["scraped"] += 1
 
         # ── hard reject ──
-        # Check title + company + description; many staffing firms
-        # have giveaway company names but normal-sounding job text.
+        # Include company name: many staffing firms have giveaway names but normal job text.
         reject_text = f"{job['title']} {job['company']} {desc}"
         reject_kw = hard_reject_check(reject_text, hard_rejects)
         if reject_kw:
@@ -925,13 +907,11 @@ def run_brain1() -> None:
             g1 = gemma1_filter(s1_client, s1_model, s1_backend, desc, profile_text)
             insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
             log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
-            # Embed-on-scrape for RAG "similar past applications".
-            # Best-effort: a failed embed must never fail the scrape.
+            # Best-effort embed-on-scrape for RAG; a failed embed must never fail the scrape.
             embeddings.embed_and_store(conn, job)
             if g1.verdict == "GOOD":
                 counts["good"] += 1
-                # Update job dict with verdict so stage2 knows it
-                job["verdict"] = "GOOD"
+                job["verdict"] = "GOOD"  # stage 2 reads this
                 good_jobs.append(job)
             elif g1.verdict == "MAYBE":
                 counts["maybe"] += 1
@@ -947,8 +927,7 @@ def run_brain1() -> None:
         return True
 
     try:
-        # JobSpy term loop runs only when at least one JobSpy site is selected.
-        # An empty source list (YC-only run) skips it entirely — no empty JobSpy call.
+        # YC-only run (no JobSpy sites) skips this loop — avoids an empty JobSpy call.
         scrape_terms = list(enumerate(search_terms, 1)) if jobspy_enabled(sources) else []
         if not scrape_terms:
             log.info("[stage1] No JobSpy sources selected; skipping LinkedIn/Indeed scrape.")

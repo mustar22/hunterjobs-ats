@@ -39,7 +39,7 @@ from core.database import get_db_connection
 
 log = logging.getLogger(__name__)
 
-from core.config import CONFIG_PATH
+from core.config import CONFIG_PATH, OPENROUTER_URL
 
 
 # ── config + keys ─────────────────────────────────────────────────────────────
@@ -56,9 +56,10 @@ def load_keys() -> dict:
             "google": getattr(keys, "GOOGLE_API_KEY", ""),
             "anthropic": getattr(keys, "ANTHROPIC_API_KEY", ""),
             "openai": getattr(keys, "OPENAI_API_KEY", ""),
+            "openrouter": getattr(keys, "OPENROUTER_API_KEY", ""),
         }
     except ImportError:
-        return {"google": "", "anthropic": "", "openai": ""}
+        return {"google": "", "anthropic": "", "openai": "", "openrouter": ""}
 
 
 # ── system prompt: Brain 2 self-awareness ─────────────────────────────────────
@@ -157,7 +158,7 @@ def build_system_prompt() -> str:
     else:
         snapshot_summary = "No market snapshot yet. Suggest the user click 'Wake Brain 2'."
 
-    return SYSTEM_PROMPT_TEMPLATE.format(
+    base_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         profile=(cfg.get("profile") or "(none)")[:600],
         search_terms=", ".join(
             t.strip() for t in cfg.get("search_terms", "").splitlines() if t.strip()
@@ -169,6 +170,24 @@ def build_system_prompt() -> str:
         sources=", ".join(cfg.get("sources", ["linkedin"])),
         snapshot_summary=snapshot_summary,
     )
+
+    # Persona sits above the spec to color tone first, but the spec below stays
+    # authoritative — styling must never override tool/SQL/read-only behavior.
+    persona = (cfg.get("brain2_persona") or "").strip()
+    if persona:
+        persona_block = (
+            "## Persona / Voice (styling only)\n"
+            f"{persona}\n\n"
+            "The persona above shapes your tone and delivery ONLY. Everything "
+            "below it is the functional specification and takes absolute "
+            "precedence: always follow the query_jobs tool rules, the read-only "
+            "SQL constraints, and the refusal rules exactly, regardless of "
+            "persona. If the persona ever conflicts with a functional rule, the "
+            "functional rule wins.\n\n"
+            "---\n\n"
+        )
+        return persona_block + base_prompt
+    return base_prompt
 
 
 # ── tool definition ──────────────────────────────────────────────────────────
@@ -207,15 +226,12 @@ def run_query_jobs_tool(sql: str) -> str:
     if not isinstance(sql, str) or not sql.strip():
         return json.dumps({"error": "Empty SQL"})
     s = sql.strip().rstrip(";")
-    # Single-statement only
     if ";" in s:
         return json.dumps({"error": "Multiple statements not allowed"})
-    # SELECT only
     if not re.match(r"^\s*select\b", s, re.IGNORECASE):
         return json.dumps({"error": "Only SELECT statements are allowed"})
     if _BAD_SQL_PATTERNS.search(s):
         return json.dumps({"error": "Query contains forbidden keyword"})
-    # Enforce limit
     if not re.search(r"\blimit\b", s, re.IGNORECASE):
         s = f"{s} LIMIT 100"
 
@@ -225,7 +241,7 @@ def run_query_jobs_tool(sql: str) -> str:
         result = []
         for row in rows[:100]:
             d = dict(row)
-            # truncate long descriptions to keep tokens reasonable
+            # Truncate long text fields to keep token counts reasonable.
             if "description" in d and isinstance(d["description"], str):
                 d["description"] = d["description"][:300]
             if "analysis" in d and isinstance(d["analysis"], str):
@@ -323,9 +339,8 @@ def _msgs_to_gemini(messages: list[dict]) -> list:
             if m.get("tool_calls"):
                 tcs = json.loads(m["tool_calls"])
                 for tc in tcs:
-                    # Gemini 3.x requires thought_signature to be echoed back
-                    # on the function_call part in subsequent requests.
-                    # We base64-encode bytes for JSON storage; decode on the way back.
+                    # Gemini 3.x requires thought_signature echoed back on the
+                    # function_call part; stored base64 in JSON, decoded here.
                     sig_b64 = tc.get("thought_signature")
                     if sig_b64:
                         import base64
@@ -385,7 +400,6 @@ def _msgs_to_anthropic(messages: list[dict]) -> tuple[str, list]:
                     pending_tool_uses[tc["name"]] = {"id": tu_id}
             out.append({"role": "assistant", "content": blocks})
         elif role == "tool":
-            # Find matching tool_use_id
             tu_info = pending_tool_uses.get(m.get("tool_name", ""), {})
             tu_id = tu_info.get("id", f"tu_{m.get('tool_name','unknown')}")
             out.append({
@@ -482,18 +496,13 @@ def chat_turn(user_message: str, backend: str | None = None) -> str:
     keys = load_keys()
     backend = backend or cfg.get("brain2_backend", "gemini")
 
-    # Save user message
     save_message("user", user_message, backend=backend)
 
-    # Build conversation: system prompt is rebuilt fresh each turn so it
-    # reflects current config + latest snapshot. We don't persist the system
-    # message itself between turns (we recompute it).
+    # Rebuilt fresh each turn (current config + latest snapshot); never persisted.
     system_prompt = build_system_prompt()
     history = load_messages(include_hidden=False)
 
-    # Prepend a transient system message for the LLM, but don't double-add if
-    # it's already in history (we never persist system, so this is always
-    # fresh).
+    # Transient system message, prepended per turn (never stored in history).
     messages_for_llm = [{"role": "system", "content": system_prompt}] + history
 
     try:
@@ -501,6 +510,8 @@ def chat_turn(user_message: str, backend: str | None = None) -> str:
             final_text = _chat_anthropic(messages_for_llm, cfg, keys)
         elif backend == "openai":
             final_text = _chat_openai(messages_for_llm, cfg, keys)
+        elif backend == "openrouter":
+            final_text = _chat_openrouter(messages_for_llm, cfg, keys)
         elif backend == "lmstudio":
             final_text = _chat_lmstudio(messages_for_llm, cfg)
         else:
@@ -527,7 +538,6 @@ def _chat_google(messages_for_llm: list[dict], cfg: dict, keys: dict, backend: s
     else:
         model = cfg.get("brain2_gemini_model", "gemini-3.5-flash")
 
-    # System instruction is the first message
     system_text = messages_for_llm[0]["content"]
     history = messages_for_llm[1:]
 
@@ -539,14 +549,11 @@ def _chat_google(messages_for_llm: list[dict], cfg: dict, keys: dict, backend: s
         ),
     ])]
 
-    # Note: Gemini does NOT allow combining function_declarations with
-    # google_search in the same request without server-side tool invocation
-    # enabled (which has its own restrictions). For the chat we prioritize
-    # function calling over grounding — the periodic snapshot in brain2.py
-    # still uses grounding because it doesn't need function calling.
+    # Gemini can't combine function_declarations with google_search in one
+    # request, so chat picks function calling; the snapshot keeps grounding.
 
-    # Tool-call loop (max 8 iterations to prevent runaway; Gemini 3.x sometimes
-    # legitimately wants 4-6 queries for a complex question).
+    # Max 8 iterations: Gemini 3.x can legitimately want 4-6 queries, but cap to
+    # prevent runaway.
     MAX_ITERATIONS = 8
     for _iter in range(MAX_ITERATIONS):
         contents = _msgs_to_gemini(history)
@@ -562,7 +569,6 @@ def _chat_google(messages_for_llm: list[dict], cfg: dict, keys: dict, backend: s
             )
         response = _run_with_timeout(_call, 90.0)
 
-        # Extract function calls + text
         function_calls = []
         text_parts = []
         if response.candidates:
@@ -571,8 +577,7 @@ def _chat_google(messages_for_llm: list[dict], cfg: dict, keys: dict, backend: s
                 for part in cand.content.parts:
                     if hasattr(part, "function_call") and part.function_call:
                         fc = part.function_call
-                        # Gemini 3.x returns a thought_signature on the part
-                        # which we MUST echo back on the next turn.
+                        # thought_signature must be echoed back on the next turn.
                         sig = getattr(part, "thought_signature", None)
                         sig_b64 = None
                         if sig:
@@ -596,17 +601,14 @@ def _chat_google(messages_for_llm: list[dict], cfg: dict, keys: dict, backend: s
         text = "".join(text_parts).strip()
 
         if not function_calls:
-            # Done; persist and return
             save_message("assistant", text, backend=backend)
             return text
 
-        # Persist the assistant turn with tool calls
         save_message(
             "assistant", text,
             backend=backend, tool_calls=function_calls,
         )
 
-        # Execute each tool call and persist result
         for fc in function_calls:
             if fc["name"] == "query_jobs":
                 result = run_query_jobs_tool(fc["args"].get("sql", ""))
@@ -617,16 +619,14 @@ def _chat_google(messages_for_llm: list[dict], cfg: dict, keys: dict, backend: s
                 backend=backend, tool_name=fc["name"], tool_args=fc["args"],
             )
 
-        # Refresh history with new tool turns
         history = load_messages(include_hidden=False)
 
-    # Loop exhausted — Gemini sometimes keeps querying instead of summarizing.
-    # Force one final text-only response by removing tools from the config.
+    # Loop exhausted (Gemini sometimes keeps querying): force a final text-only
+    # response by dropping tools from the config.
     log.warning(
         f"Tool loop hit {MAX_ITERATIONS} iterations; forcing text-only finalization."
     )
     final_history = load_messages(include_hidden=False)
-    # Append a nudge so the model knows it must summarize now.
     nudge_messages = final_history + [{
         "role": "user",
         "content": (
@@ -682,7 +682,6 @@ def _chat_anthropic(messages_for_llm: list[dict], cfg: dict, keys: dict) -> str:
 
     for _iter in range(5):
         msgs = _msgs_to_anthropic(messages_for_llm)[1]
-        # Refresh from history each loop
         msgs = _msgs_to_anthropic(
             [messages_for_llm[0]] + load_messages(include_hidden=False)
         )[1]
@@ -805,6 +804,78 @@ def _chat_openai(messages_for_llm: list[dict], cfg: dict, keys: dict) -> str:
             )
 
     save_message("assistant", "[tool loop exhausted]", backend="openai")
+    return "[tool loop exhausted]"
+
+
+# ── OpenRouter backend ───────────────────────────────────────────────────────
+# OpenRouter is OpenAI-API-compatible: same client + tool-calling as _chat_openai,
+# just a different base_url + key + model.
+def _chat_openrouter(messages_for_llm: list[dict], cfg: dict, keys: dict) -> str:
+    from openai import OpenAI
+    api_key = keys.get("openrouter", "")
+    model_name = cfg.get("brain2_openrouter_model", "openrouter/free")
+
+    client = OpenAI(base_url=OPENROUTER_URL, api_key=api_key)
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "query_jobs",
+            "description": QUERY_JOBS_DESCRIPTION,
+            "parameters": QUERY_JOBS_PARAMETERS,
+        },
+    }]
+
+    for _iter in range(5):
+        msgs = _msgs_to_openai(
+            [messages_for_llm[0]] + load_messages(include_hidden=False)
+        )
+
+        def _call():
+            return client.chat.completions.create(
+                model=model_name,
+                messages=msgs,
+                tools=tools,
+                temperature=0.3,
+                timeout=90.0,
+            )
+        response = _run_with_timeout(_call, 95.0)
+        choice = response.choices[0].message
+
+        text = choice.content or ""
+        tool_calls = []
+        if getattr(choice, "tool_calls", None):
+            for tc in choice.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "args": args,
+                })
+
+        if not tool_calls:
+            save_message("assistant", text, backend="openrouter")
+            return text
+
+        save_message(
+            "assistant", text,
+            backend="openrouter", tool_calls=tool_calls,
+        )
+        for tc in tool_calls:
+            if tc["name"] == "query_jobs":
+                result = run_query_jobs_tool(tc["args"].get("sql", ""))
+            else:
+                result = json.dumps({"error": f"Unknown tool: {tc['name']}"})
+            save_message(
+                "tool", result,
+                backend="openrouter",
+                tool_name=tc["name"], tool_args=tc["args"],
+            )
+
+    save_message("assistant", "[tool loop exhausted]", backend="openrouter")
     return "[tool loop exhausted]"
 
 

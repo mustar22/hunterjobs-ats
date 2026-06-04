@@ -34,15 +34,13 @@ init_db()
 CFG = load_config()
 runner_status.dashboard_heartbeat()  # write first heartbeat before any brain starts
 
-# Background heartbeat thread: runs for the lifetime of the dashboard process.
-# Lives in pipeline.process_control; the brains check dashboard_is_alive() and
-# self-terminate when the heartbeat stops being refreshed.
+# Heartbeat thread runs for the dashboard's lifetime; brains self-terminate
+# when dashboard_is_alive() stops returning True.
 _hb_thread = start_heartbeat()
 
 
-# Apply theme attribute to <html> on every page load.
-# shared=True applies these to every @ui.page (we only have one, but v2 requires
-# being explicit about scope when add_head_html is called at module level).
+# shared=True scopes this to every @ui.page — required by v2 for module-level
+# add_head_html.
 ui.add_head_html(f"<style>{PALETTE_CSS}</style>", shared=True)
 ui.add_body_html(
     f"<script>document.documentElement.setAttribute('data-theme', '{CFG['theme']}');</script>",
@@ -66,7 +64,6 @@ def index():
         with ui.row().style("align-items: center; gap: 0;"):
             ui.html(f'<span class="app-title">{_logo_html(24)}HunterJobs ATS</span>')
             ui.html('<span class="app-sub">three-stage job intelligence pipeline</span>')
-        # right-side: live status
         status_label = ui.html("").style("font-family: 'JetBrains Mono', monospace; "
                                           "font-size: 12px; color: var(--text-dim);")
 

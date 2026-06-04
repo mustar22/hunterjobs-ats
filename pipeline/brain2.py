@@ -33,7 +33,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-from core.config import CONFIG_PATH
+from core.config import CONFIG_PATH, OPENROUTER_URL
 
 
 def load_config() -> dict:
@@ -49,9 +49,10 @@ def load_keys() -> dict:
             "google": getattr(keys, "GOOGLE_API_KEY", ""),
             "anthropic": getattr(keys, "ANTHROPIC_API_KEY", ""),
             "openai": getattr(keys, "OPENAI_API_KEY", ""),
+            "openrouter": getattr(keys, "OPENROUTER_API_KEY", ""),
         }
     except ImportError:
-        return {"google": "", "anthropic": "", "openai": ""}
+        return {"google": "", "anthropic": "", "openai": "", "openrouter": ""}
 
 
 def aggregate_market_data(days: int = 7) -> dict:
@@ -110,7 +111,17 @@ def aggregate_market_data(days: int = 7) -> dict:
     }
 
 
-def build_prompt(data: dict, profile: str, backend: str = "gemini") -> str:
+def build_prompt(data: dict, profile: str, backend: str = "gemini",
+                 persona: str = "") -> str:
+    # Persona shapes voice only; the tasks below are unchanged. Empty = default.
+    persona_block = ""
+    if persona and persona.strip():
+        persona_block = (
+            "## Persona / Voice\n"
+            f"{persona.strip()}\n"
+            "(This shapes your tone and delivery only — not what data to analyze "
+            "or the required report structure below.)\n\n"
+        )
     base = (
         f"A candidate with this profile is job hunting:\n{profile or '(no profile)'}\n\n"
         f"Market data from the last 7 days of their scraping:\n"
@@ -150,7 +161,7 @@ def build_prompt(data: dict, profile: str, backend: str = "gemini") -> str:
             "analyze ONLY the data given below and apply your own market knowledge. "
             "Do not pretend to search or 'run queries' — go straight to the report.\n\n"
         )
-    return head + base + tasks
+    return persona_block + head + base + tasks
 
 
 def run_brain2() -> None:
@@ -167,8 +178,7 @@ def run_brain2() -> None:
     runner_status.start("brain2")
     runner_status.patch("brain2", pid=os.getpid(), phase="aggregating")
 
-    # Watchdog: hard-kill if dashboard heartbeat dies (covers being stuck in a
-    # synchronous Gemini call).
+    # Watchdog: hard-kill if dashboard dies while stuck in a synchronous Gemini call.
     import threading as _t
     def _watchdog():
         import time as _time
@@ -200,7 +210,8 @@ def run_brain2() -> None:
         return
 
     log.info(f"Aggregated {data['total_jobs']} jobs")
-    prompt = build_prompt(data, profile_text, backend=backend)
+    prompt = build_prompt(data, profile_text, backend=backend,
+                          persona=cfg.get("brain2_persona", ""))
     targeting_feedback = ""
 
     if backend == "lmstudio":
@@ -208,7 +219,6 @@ def run_brain2() -> None:
         lm_url = cfg.get("brain2_lmstudio_url", "http://localhost:1234/v1")
         lm_model = (cfg.get("brain2_lmstudio_model") or "").strip()
         if not lm_model:
-            # Auto-detect first loaded model
             try:
                 import requests
                 r = requests.get(f"{lm_url.rstrip('/')}/models", timeout=5)
@@ -263,6 +273,23 @@ def run_brain2() -> None:
         client = OpenAI(api_key=keys["openai"])
         response = client.chat.completions.create(
             model=openai_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            timeout=120.0,
+        )
+        analysis_text = response.choices[0].message.content or ""
+
+    elif backend == "openrouter":
+        runner_status.patch("brain2", phase="calling openrouter")
+        openrouter_model = cfg.get("brain2_openrouter_model", "openrouter/free")
+        log.info(f"Calling OpenRouter: {openrouter_model}")
+        if not keys.get("openrouter"):
+            log.error("OPENROUTER_API_KEY not set in keys.py")
+            runner_status.finish("brain2", error="OPENROUTER_API_KEY missing")
+            return
+        client = OpenAI(base_url=OPENROUTER_URL, api_key=keys["openrouter"])
+        response = client.chat.completions.create(
+            model=openrouter_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             timeout=120.0,
@@ -333,10 +360,8 @@ def run_brain2() -> None:
     conn.commit()
     conn.close()
 
-    # Inject the snapshot into chat history as a hidden system message so that
-    # subsequent chat follow-ups can reference it. The chat module rebuilds the
-    # system prompt each turn with a snapshot summary, but the full text is
-    # only available if the user asks.
+    # Store the full snapshot as a hidden system message so chat follow-ups can
+    # reference it — the per-turn system prompt only carries a short summary.
     try:
         from pipeline import brain2_chat
         brain2_chat.save_message(

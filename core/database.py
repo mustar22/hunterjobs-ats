@@ -15,10 +15,8 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).resolve().parent / "db" / "hunterjobs_ats.db"
 
-# Set to True once the sqlite-vec extension has loaded successfully on at least
-# one connection. Gates the RAG ("similar past applications") feature — when the
-# extension can't load (e.g. Python built without extension support), RAG is
-# disabled and the rest of the app runs normally.
+# Gates the RAG feature: True once sqlite-vec loads on any connection. When the
+# extension can't load, RAG is disabled and the rest of the app runs normally.
 RAG_AVAILABLE = False
 _rag_load_warned = False
 
@@ -147,10 +145,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
 );
 """
 
-# Semantic embeddings for the RAG "similar past applications" feature.
-# vec0 virtual table, one 768-dim Gemini text-embedding-004 vector per job.
-# job_id is the primary key (conceptual FK to jobs.id; vec0 doesn't enforce FK).
-# Only created when the sqlite-vec extension is available.
+# RAG embeddings: vec0 virtual table, one 768-dim Gemini vector per job.
+# job_id is a conceptual FK to jobs.id (vec0 doesn't enforce it).
 EMBEDDINGS_TABLE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS job_embeddings USING vec0(
     job_id    TEXT PRIMARY KEY,
@@ -192,9 +188,7 @@ def init_db() -> None:
     for trig in TRIGGERS:
         c.execute(trig)
 
-    # Embeddings table only exists when the sqlite-vec extension loaded. If it
-    # didn't, RAG is disabled and we skip creating it — the rest of the schema
-    # is unaffected.
+    # Skip the embeddings table when sqlite-vec didn't load (RAG disabled).
     if RAG_AVAILABLE:
         try:
             c.execute(EMBEDDINGS_TABLE)

@@ -92,9 +92,8 @@ def is_stale(brain_status: dict[str, Any], max_age_seconds: int = 90) -> bool:
 
 def _atomic_write(data: dict[str, Any]) -> None:
     STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Retry os.replace because Windows can fail if the target file is briefly
-    # held open by another reader (dashboard + brain heartbeat thread both
-    # touch this file).
+    # Retry os.replace: on Windows it fails if a reader briefly holds the file
+    # open (dashboard + brain heartbeat thread both touch it).
     last_err = None
     for attempt in range(5):
         fd, tmp = tempfile.mkstemp(
@@ -111,7 +110,6 @@ def _atomic_write(data: dict[str, Any]) -> None:
                 os.unlink(tmp)
             except OSError:
                 pass
-            # Tiny backoff and retry
             import time as _t
             _t.sleep(0.02 * (attempt + 1))
         except Exception:
@@ -148,7 +146,10 @@ def start(brain: str) -> None:
 
 
 def finish(brain: str, error: str | None = None) -> None:
-    patch(brain, state=("error" if error else "done"), error=error)
+    # Clear pid: a finished process can linger as a zombie (the dashboard never
+    # reaps the children it spawns), and os.kill(pid, 0) reports zombies as
+    # alive — so a stale pid would make the restart guard block forever.
+    patch(brain, state=("error" if error else "done"), error=error, pid=None)
 
 
 def reset() -> None:

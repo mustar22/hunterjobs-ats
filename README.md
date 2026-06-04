@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.3-9d6fff" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.4.0-9d6fff" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
   <img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-orange" />
   <img alt="tests" src="https://github.com/mustar22/hunterjobs-ats/actions/workflows/test.yml/badge.svg" />
@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <sub><strong>v0.3 just shipped</strong> &mdash; Y Combinator startups as a job source, remote-only filtering, source badges. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
+  <sub><strong>v0.4 just shipped</strong> &mdash; OpenRouter backend (free + paid models, live picker), Brain 2 persona, full package restructure. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
 </p>
 
 ---
@@ -189,6 +189,14 @@ Your `keys.py` is gitignored. Don't commit it.
 
 ## Changelog & Roadmap
 
+### v0.4 — shipped
+
+- **OpenRouter backend** for Brain 1 and Brain 2 &mdash; OpenAI-compatible, with a live model picker that fetches the OpenRouter catalog (searchable, shows free/paid pricing inline)
+- **Brain 2 persona** &mdash; an editable voice/behavior field in Setup that shapes both the market snapshot and chat
+- **Package restructure** &mdash; flat layout split into `core/` / `pipeline/` / `ui/` packages with a proper `pyproject.toml` editable install; `dashboard.py` slimmed from ~2300 lines to a thin entry point
+- **Dev tooling** &mdash; a wipe script to clear personal data before pushing
+- Fixes: stale-PID guard so brains restart cleanly after finishing or being stopped; Brain 2 backend label no longer hardcoded to Gemini
+
 ### v0.3 — shipped
 
 - **Y Combinator startups as a job source** &mdash; via the companion [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper) package; targets small early-stage YC startups and scrapes full descriptions from their ATS boards
@@ -215,28 +223,9 @@ Your `keys.py` is gitignored. Don't commit it.
 
 ## Feedback
 
-This is a tool I'm using daily for my own job hunt. If something's broken or weird, open an issue. If you have ideas, also open an issue. If you want to use it and got stuck on setup, definitely open an issue &mdash; the install docs probably need work.
+This is a tool I'm using daily for my own job hunt. If something's broken or weird, open an issue. If you have ideas, also open an issue. If you want to use it and got stuck on setup, definitely open an issue &mdash; the install docs probably need work
 
-PRs welcome but please open an issue first so we can sync on direction.
-
----
-
-## Code style
-
-**Comments — lean minimal.** A short header comment per file is welcome. Inside
-the code, comment only the non-obvious: the *why*, not the *what*. No narration,
-no restating code in English, no blow-by-blow. Trust the reader. When in doubt, cut.
-
-**File size — a smell, not a rule.** No hard line cap, but a file sprawling past
-~600–800 lines usually means it's doing too many things. Treat that as a signal to
-split along responsibility seams, not a mechanical limit. Code should document
-itself through structure.
-
-**Structure.** One clear responsibility per file. Prefer small focused modules
-over god-files. The code is split into three packages — `core/` (config, DB,
-schemas, status IPC, embeddings), `pipeline/` (the brains + detached-process
-control), and `ui/` (the NiceGUI dashboard) — with `dashboard.py` as the thin
-entry point that wires them together.
+PRs welcome but please open an issue first so we can sync on direction
 
 ---
 

@@ -19,13 +19,136 @@ from core import database  # for live RAG_AVAILABLE flag
 from core.database import get_db_connection
 import core.embeddings as embeddings  # RAG backfill
 import core.runner_status as runner_status
-from core.config import load_config, save_config, load_keys
+from core.config import load_config, save_config, load_keys, OPENROUTER_URL
 from pipeline import brain2_chat  # chat + clear history
 from pipeline.process_control import spawn_detached, kill_pid, _is_pid_alive
 
 from ui.helpers import status_dot_class, fmt_ts, safe_notify, run_in_thread
 from ui.db_queries import fetch_applied
 from ui.jobs import render_job_row
+
+
+# ── OpenRouter live model picker ──────────────────────────────────────────────
+# Session cache so tab switches don't re-hit the API. None = unfetched or last
+# fetch failed (retry next render); a list = a reusable successful fetch.
+_OPENROUTER_MODELS_CACHE = None
+
+
+def _fmt_openrouter_price(pricing: dict) -> str:
+    """Format OpenRouter per-token pricing into a compact per-million label.
+    Returns 'FREE' when both prompt+completion are 0, else e.g.
+    '$0.43/M in · $0.87/M out'. Empty string if pricing is unparseable."""
+    try:
+        prompt = float(pricing.get("prompt", "0") or 0)
+        completion = float(pricing.get("completion", "0") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if prompt == 0 and completion == 0:
+        return "FREE"
+    return (f"${prompt * 1_000_000:.2f}/M in"
+            f" · ${completion * 1_000_000:.2f}/M out")
+
+
+def _fetch_openrouter_models() -> list[dict]:
+    """Fetch + cache the OpenRouter model catalog (no auth needed for the list).
+    Returns a list of {id, price_label}. On failure returns [] WITHOUT caching,
+    so a later render retries (network may have come back)."""
+    global _OPENROUTER_MODELS_CACHE
+    if _OPENROUTER_MODELS_CACHE is not None:
+        return _OPENROUTER_MODELS_CACHE
+    try:
+        import requests
+        r = requests.get(f"{OPENROUTER_URL}/models", timeout=8)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        models = []
+        for m in data:
+            mid = m.get("id", "")
+            if not mid:
+                continue
+            models.append({
+                "id": mid,
+                "price_label": _fmt_openrouter_price(m.get("pricing", {}) or {}),
+            })
+        models.sort(key=lambda x: x["id"].lower())
+        _OPENROUTER_MODELS_CACHE = models  # cache only on success
+        return models
+    except Exception:
+        return []  # leave cache None → retry on next render
+
+
+def _openrouter_model_picker(current_value: str, label: str):
+    """Reusable picker for an OpenRouter model id. Returns a NiceGUI element
+    whose `.value` holds the selected/typed model id (read it in do_save).
+
+    Live path: a searchable dropdown (type to filter the 315+ list by substring
+    against id + inline pricing). Offline/failed path: a plain free-text input
+    pre-filled with the current config value, so the Setup tab always renders."""
+    current = (current_value or "openrouter/free").strip()
+    models = _fetch_openrouter_models()
+    if not models:
+        return ui.input(
+            label=f"{label} (catalog unavailable — type a model id)",
+            value=current,
+        ).props("outlined").style("width: 420px;")
+
+    options = {}
+    for m in models:
+        price = m["price_label"]
+        options[m["id"]] = f'{m["id"]}  ·  {price}' if price else m["id"]
+    # Always keep the current value selectable, even if it left the catalog.
+    if current not in options:
+        options[current] = current
+    return ui.select(
+        options, value=current, with_input=True, label=f"{label} (type to search)",
+    ).props("outlined").style("min-width: 420px;")
+
+
+# ── Brain 2 backend label (single source of truth) ────────────────────────────
+_BACKEND_OPTIONS = {
+    "gemini":    "Gemini",
+    "gemma":     "Gemma 4 26B (free)",
+    "anthropic": "Claude (paid)",
+    "openai":    "OpenAI GPT (paid)",
+    "openrouter": "OpenRouter",
+    "lmstudio":  "LM Studio (local)",
+}
+_GEMINI_MODELS_PRETTY = {
+    "gemini-3.5-flash":       "3.5 Flash",
+    "gemini-3.1-pro-preview": "3.1 Pro",
+}
+_ANTHROPIC_MODELS_PRETTY = {
+    "claude-opus-4-7":           "Opus 4.7",
+    "claude-sonnet-4-6":         "Sonnet 4.6",
+    "claude-haiku-4-5-20251001": "Haiku 4.5",
+}
+
+
+def brain2_backend_label() -> str:
+    """Human-readable label for the currently configured Brain 2 backend +
+    model, read fresh from config. Shared by the Market Analyzer header and the
+    chat tab's 'Backend:' line so they never drift."""
+    c = load_config()
+    b = c.get("brain2_backend", "gemini")
+    label = _BACKEND_OPTIONS.get(b, b)
+    if b == "gemini":
+        sub = _GEMINI_MODELS_PRETTY.get(
+            c.get("brain2_gemini_model", "gemini-3.5-flash"),
+            c.get("brain2_gemini_model", ""),
+        )
+        label = f"{label} {sub}"
+    elif b == "anthropic":
+        sub = _ANTHROPIC_MODELS_PRETTY.get(
+            c.get("brain2_anthropic_model", "claude-sonnet-4-6"),
+            c.get("brain2_anthropic_model", ""),
+        )
+        label = f"{label} — {sub}"
+    elif b == "openai":
+        label = f"{label} — {c.get('brain2_openai_model', 'gpt-5.5')}"
+    elif b == "openrouter":
+        label = f"{label} — {c.get('brain2_openrouter_model', 'openrouter/free')}"
+    return label
+
 
 LOG_PATH = Path(__file__).resolve().parent.parent / "hunterjobs.log"
 
@@ -52,8 +175,7 @@ def render_applied_tab():
                 render_job_row(row, refresh)
 
     refresh()
-    # No auto-refresh on Applied tab — would close any open expansions
-    # while the user is reading. Refresh is via explicit user action only.
+    # No auto-refresh here: it would close expansions the user is reading.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -97,13 +219,25 @@ def render_market_tab():
         wake_btn.on("click", lambda _: wake())
         stop_b2_btn.on("click", lambda _: stop_b2())
 
-        ui.html(
-            '<div style="font-size: 12px; color: var(--text-dim);">'
-            'Powered by Gemini 3.1 Pro with Google Search grounding. '
-            'Aggregates 7 days of Brain 1 output and produces a strategic report.</div>'
-        )
+        # Reflect the configured backend; grounding is gemini-only, so claim it only there.
+        market_blurb = ui.html("")
 
-        # Status line
+        def refresh_market_blurb():
+            grounding = (
+                " with Google Search grounding"
+                if load_config().get("brain2_backend", "gemini") == "gemini"
+                else ""
+            )
+            market_blurb.set_content(
+                '<div style="font-size: 12px; color: var(--text-dim);">'
+                f'Powered by {brain2_backend_label()}{grounding}. '
+                'Aggregates 7 days of Brain 1 output and produces a strategic '
+                'report.</div>'
+            )
+
+        refresh_market_blurb()
+        ui.timer(3.0, refresh_market_blurb)
+
         b2_status = ui.html("").style(
             "font-family: 'JetBrains Mono', monospace; font-size: 12px; "
             "color: var(--text-dim);"
@@ -127,7 +261,6 @@ def render_market_tab():
         refresh_b2_status()
         ui.timer(2.0, refresh_b2_status)
 
-        # Metrics row
         ui.html('<div class="section-title">Last 7 days</div>')
         metrics_row = ui.row().classes("w-full").style("gap: 10px;")
 
@@ -164,7 +297,6 @@ def render_market_tab():
         refresh_market_metrics()
         ui.timer(5.0, refresh_market_metrics)
 
-        # Decree
         ui.html('<div class="section-title">Strategist Report</div>')
         decree_container = ui.element("div").classes("w-full")
 
@@ -207,46 +339,10 @@ def render_market_tab():
             'and remembers the conversation across sessions.</div>'
         )
 
-        # Backend display (configured in Setup tab)
         cfg = load_config()
         keys = load_keys()
 
-        backend_options = {
-            "gemini":    "Gemini",
-            "gemma":     "Gemma 4 26B (free)",
-            "anthropic": "Claude (paid)",
-            "openai":    "OpenAI GPT (paid)",
-            "lmstudio":  "LM Studio (local)",
-        }
-        gemini_models_pretty = {
-            "gemini-3.5-flash":       "3.5 Flash",
-            "gemini-3.1-pro-preview": "3.1 Pro",
-        }
-        anthropic_models_pretty = {
-            "claude-opus-4-7":           "Opus 4.7",
-            "claude-sonnet-4-6":         "Sonnet 4.6",
-            "claude-haiku-4-5-20251001": "Haiku 4.5",
-        }
-
-        def _current_backend_label() -> str:
-            c = load_config()
-            b = c.get("brain2_backend", "gemini")
-            label = backend_options.get(b, b)
-            if b == "gemini":
-                sub = gemini_models_pretty.get(
-                    c.get("brain2_gemini_model", "gemini-3.5-flash"),
-                    c.get("brain2_gemini_model", ""),
-                )
-                label = f"{label} {sub}"
-            elif b == "anthropic":
-                sub = anthropic_models_pretty.get(
-                    c.get("brain2_anthropic_model", "claude-sonnet-4-6"),
-                    c.get("brain2_anthropic_model", ""),
-                )
-                label = f"{label} — {sub}"
-            elif b == "openai":
-                label = f"{label} — {c.get('brain2_openai_model', 'gpt-5.5')}"
-            return label
+        _current_backend_label = brain2_backend_label
 
         with ui.row().style("gap: 12px; align-items: center; margin-bottom: 8px; "
                              "flex-wrap: wrap;"):
@@ -304,6 +400,11 @@ def render_market_tab():
                 '<div style="font-size: 12px; color: var(--maybe);">'
                 '⚠ OPENAI_API_KEY not set in keys.py — chat will fail.</div>'
             )
+        if not keys.get("openrouter") and _b == "openrouter":
+            ui.html(
+                '<div style="font-size: 12px; color: var(--maybe);">'
+                '⚠ OPENROUTER_API_KEY not set in keys.py — chat will fail.</div>'
+            )
         if _b == "lmstudio":
             ui.html(
                 '<div style="font-size: 12px; color: var(--maybe);">'
@@ -313,7 +414,6 @@ def render_market_tab():
                 'fine with local models.</div>'
             )
 
-        # Chat scroll container
         chat_container = ui.element("div").classes("chat-container")
 
         def refresh_chat():
@@ -333,9 +433,7 @@ def render_market_tab():
                     # Skip empty assistant turns (they were tool-call-only)
                     if role == "assistant" and not content and not m.get("tool_calls"):
                         continue
-                    # Tool results: render compact
                     if role == "tool":
-                        # Pretty-format JSON if possible
                         try:
                             parsed = json.loads(content)
                             preview = json.dumps(parsed, indent=2)[:1200]
@@ -349,10 +447,8 @@ def render_market_tab():
                         )
                         continue
                     cls = "chat-msg-user" if role == "user" else "chat-msg-assistant"
-                    # Escape HTML in content
                     safe = content.replace("<", "&lt;").replace(">", "&gt;")
                     ui.html(f'<div class="chat-msg {cls}">{safe}</div>')
-            # Auto-scroll to bottom
             ui.run_javascript(
                 "const el = document.querySelector('.chat-container'); "
                 "if (el) el.scrollTop = el.scrollHeight;"
@@ -360,7 +456,6 @@ def render_market_tab():
 
         refresh_chat()
 
-        # Input row
         with ui.element("div").classes("chat-input-row"):
             chat_input = ui.textarea(placeholder="Ask Brain 2 about your data...")\
                 .props("outlined dense autogrow")\
@@ -406,7 +501,6 @@ def render_logs_tab():
                                           ui.notify("Brain 2 awakened.")))\
                 .classes("btn-ghost")
 
-        # Status block
         status_block = ui.element("div").classes("status-bar").style(
             "flex-direction: column; align-items: flex-start; gap: 8px;"
         )
@@ -487,13 +581,11 @@ def render_setup_tab():
     keys = load_keys()
 
     with ui.column().classes("w-full").style("padding: 16px; gap: 18px; max-width: 900px;"):
-        # Theme
         ui.html('<div class="section-title">Appearance</div>')
         with ui.row().style("gap: 10px; align-items: center;"):
             def on_theme_change(e):
-                # NiceGUI v2: ui.select with dict options passes value via e.value
-                # when using on_change=, but if attached via .on('update:model-value')
-                # it comes as e.args. Read from the select directly to be safe.
+                # Read from the select directly: NiceGUI v2 varies where the
+                # value lands (e.value vs e.args) depending on how it's wired.
                 new_theme = theme_select.value
                 cfg["theme"] = new_theme
                 save_config(cfg)
@@ -508,7 +600,6 @@ def render_setup_tab():
                 on_change=on_theme_change,
             ).style("min-width: 220px;")
 
-        # API keys (read-only display)
         ui.html('<div class="section-title">API Keys</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
@@ -521,6 +612,7 @@ def render_setup_tab():
                 f'GOOGLE_API_KEY    = "{"*" * 20 if keys["google"] else "(not set)"}"'
                 f'<br>ANTHROPIC_API_KEY = "{"*" * 20 if keys.get("anthropic") else "(not set, optional)"}"'
                 f'<br>OPENAI_API_KEY    = "{"*" * 20 if keys.get("openai") else "(not set, optional)"}"'
+                f'<br>OPENROUTER_API_KEY = "{"*" * 20 if keys.get("openrouter") else "(not set, optional)"}"'
                 f'<br>GITHUB_PAT        = "{"*" * 20 if keys["github"] else "(not set, optional)"}"'
                 f'</div>'
             )
@@ -530,7 +622,6 @@ def render_setup_tab():
                 'GOOGLE_API_KEY is not set. Brain 1 and Brain 2 (Gemini/Gemma) will fail until you add it.</div>'
             )
 
-        # Profile
         ui.html('<div class="section-title">Candidate Profile</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
@@ -540,7 +631,6 @@ def render_setup_tab():
         profile_ta = ui.textarea(value=cfg["profile"]).props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
-        # Search terms
         ui.html('<div class="section-title">Search Terms</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
@@ -549,7 +639,6 @@ def render_setup_tab():
         terms_ta = ui.textarea(value=cfg["search_terms"]).props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
-        # Hard rejects
         ui.html('<div class="section-title">Hard Reject Keywords</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
@@ -563,7 +652,6 @@ def render_setup_tab():
             def export_rejects():
                 lines = [l.strip() for l in (rejects_ta.value or "").splitlines() if l.strip()]
                 exported = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                # Plain text format: comment header + one entry per line
                 content = (
                     f"# HunterJobs blacklist\n"
                     f"# Exported: {exported}\n"
@@ -598,11 +686,10 @@ def render_setup_tab():
                     )
 
                     def handle_upload(e):
-                        # NiceGUI has changed upload event shape across versions.
-                        # Try every known attribute in order.
+                        # NiceGUI's upload event shape varies across versions, so
+                        # probe each known attribute in turn.
                         raw = None
                         try:
-                            # Try common attribute names
                             for attr in ("content", "file", "data"):
                                 obj = getattr(e, attr, None)
                                 if obj is None:
@@ -641,7 +728,6 @@ def render_setup_tab():
                             ui.notify(f"Bad file: {ex}", type="negative")
                             return
 
-                        # Parse: skip blank lines and comments
                         entries = [
                             line.strip()
                             for line in raw.splitlines()
@@ -678,7 +764,6 @@ def render_setup_tab():
             ui.button("Import Blacklist", on_click=open_import).classes("btn-ghost")\
                 .style("font-size: 12px;")
 
-        # Scrape settings
         ui.html('<div class="section-title">Scrape Settings</div>')
         with ui.row().style("gap: 14px; flex-wrap: wrap;"):
             floor_in = ui.number(label="Salary floor (USD/month)",
@@ -705,17 +790,17 @@ def render_setup_tab():
                                    step=10, min=1, max=500)\
                 .props("outlined dense").style("width: 160px;")
 
-        # Backend selectors
         ui.html('<div class="section-title">Brain 1 — Stage 1 Backend (job filter, high volume)</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
             'Stage 1 runs once per scraped listing. Local LM Studio with an 8B model '
             'works great here — fast and free.</div>'
         )
-        # Resolve current value: prefer per-stage, fall back to legacy
+        # Prefer per-stage backend, fall back to the legacy single key.
         s1_current = cfg.get("brain1_stage1_backend") or cfg.get("brain1_backend", "gemma")
         b1s1_select = ui.select(
             {"gemma": "Gemma 4 (Google AI Studio, free tier)",
+             "openrouter": "OpenRouter (free + paid, OpenAI-compatible)",
              "lmstudio": "LM Studio (local)"},
             value=s1_current,
         ).style("min-width: 320px;")
@@ -729,6 +814,7 @@ def render_setup_tab():
         s23_current = cfg.get("brain1_stage23_backend") or cfg.get("brain1_backend", "gemma")
         b1s23_select = ui.select(
             {"gemma": "Gemma 4 (Google AI Studio, free tier)",
+             "openrouter": "OpenRouter (free + paid, OpenAI-compatible)",
              "lmstudio": "LM Studio (local)"},
             value=s23_current,
         ).style("min-width: 320px;")
@@ -745,14 +831,28 @@ def render_setup_tab():
                                 value=cfg["brain1_lmstudio_model"])\
                 .props("outlined").style("width: 360px;")
 
-        def _refresh_b1_lmstudio_visibility():
-            any_lm = (b1s1_select.value == "lmstudio"
-                      or b1s23_select.value == "lmstudio")
-            b1_lmstudio_box.set_visibility(any_lm)
+        with ui.column().style("gap: 8px;") as b1_openrouter_box:
+            ui.html(
+                '<div style="font-size: 12px; color: var(--text-dim); margin: 8px 0;">'
+                'OpenRouter model (shared by both stages if either is set to OpenRouter). '
+                'Needs OPENROUTER_API_KEY in keys.py:</div>'
+            )
+            b1_openrouter_model = _openrouter_model_picker(
+                cfg.get("brain1_openrouter_model", "openrouter/free"),
+                "OpenRouter model",
+            )
 
-        _refresh_b1_lmstudio_visibility()
-        b1s1_select.on("update:model-value", lambda _e: _refresh_b1_lmstudio_visibility())
-        b1s23_select.on("update:model-value", lambda _e: _refresh_b1_lmstudio_visibility())
+        def _refresh_b1_backend_boxes():
+            b1_lmstudio_box.set_visibility(
+                b1s1_select.value == "lmstudio" or b1s23_select.value == "lmstudio"
+            )
+            b1_openrouter_box.set_visibility(
+                b1s1_select.value == "openrouter" or b1s23_select.value == "openrouter"
+            )
+
+        _refresh_b1_backend_boxes()
+        b1s1_select.on("update:model-value", lambda _e: _refresh_b1_backend_boxes())
+        b1s23_select.on("update:model-value", lambda _e: _refresh_b1_backend_boxes())
 
         ui.html('<div class="section-title">Brain 2 Backend</div>')
         ui.html(
@@ -767,6 +867,7 @@ def render_setup_tab():
                 "gemma":     "Gemma 4 26B (free, no web search)",
                 "anthropic": "Anthropic Claude (paid)",
                 "openai":    "OpenAI GPT (paid)",
+                "openrouter": "OpenRouter (free + paid, no web search)",
                 "lmstudio":  "LM Studio (local, no web search)",
             },
             value=cfg["brain2_backend"],
@@ -804,6 +905,15 @@ def render_setup_tab():
                 },
                 value=cfg.get("brain2_openai_model", "gpt-5.5"),
             ).style("min-width: 360px;")
+        with ui.column().style("gap: 8px; margin-top: 8px;") as b2_openrouter_box:
+            ui.html(
+                '<div style="font-size: 12px; color: var(--text-dim);">'
+                'Needs OPENROUTER_API_KEY in keys.py.</div>'
+            )
+            b2_openrouter_model = _openrouter_model_picker(
+                cfg.get("brain2_openrouter_model", "openrouter/free"),
+                "OpenRouter model",
+            )
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_lmstudio_box:
             b2_url = ui.input(label="LM Studio URL",
                               value=cfg["brain2_lmstudio_url"])\
@@ -818,10 +928,24 @@ def render_setup_tab():
             b2_gemma_box.set_visibility(sel == "gemma")
             b2_anthropic_box.set_visibility(sel == "anthropic")
             b2_openai_box.set_visibility(sel == "openai")
+            b2_openrouter_box.set_visibility(sel == "openrouter")
             b2_lmstudio_box.set_visibility(sel == "lmstudio")
 
         _refresh_b2_visibility()
         b2_select.on("update:model-value", lambda _e: _refresh_b2_visibility())
+
+        # Persona applies to every backend, so it lives outside the per-backend boxes.
+        with ui.expansion("Brain 2 Persona / Behavior", icon="theater_comedy")\
+                .classes("w-full").style("margin-top: 12px;"):
+            ui.html(
+                '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
+                "Shape Brain 2's voice and behavior (snapshot + chat). "
+                'Leave blank for default. Styling only — does not change tool access '
+                'or analysis.</div>'
+            )
+            b2_persona_ta = ui.textarea(value=cfg.get("brain2_persona", ""))\
+                .props("outlined autogrow")\
+                .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
         def do_save():
             sources = []
@@ -848,13 +972,16 @@ def render_setup_tab():
                 "brain1_backend": b1s23_select.value,
                 "brain1_lmstudio_url": b1_url.value,
                 "brain1_lmstudio_model": b1_model.value,
+                "brain1_openrouter_model": b1_openrouter_model.value,
                 "brain2_backend": b2_select.value,
+                "brain2_persona": b2_persona_ta.value,
                 "brain2_gemini_model": b2_gem_model.value,
                 "brain2_gemma_model": b2_gemma_model.value,
                 "brain2_anthropic_model": b2_anthropic_model.value,
                 "brain2_openai_model": b2_openai_model.value,
                 "brain2_lmstudio_url": b2_url.value,
                 "brain2_lmstudio_model": b2_model.value,
+                "brain2_openrouter_model": b2_openrouter_model.value,
             }
             save_config(new_cfg)
             ui.notify("Saved.", type="positive")
@@ -900,8 +1027,7 @@ def render_setup_tab():
                     pass
 
                 def _tick():
-                    # Bail if the Setup tab (and our label) has been torn down —
-                    # otherwise the timer fires into a deleted slot.
+                    # Don't fire into a deleted slot if the tab was torn down.
                     if backfill_status.is_deleted:
                         return
                     if _bf["total"]:
@@ -915,9 +1041,8 @@ def render_setup_tab():
                         embeddings.backfill_embeddings, _bf_progress
                     )
                 finally:
-                    # cancel() (not deactivate()) ends the timer's loop and removes
-                    # the element from its slot, so it can never fire after the slot
-                    # is gone. Runs even if the backfill raises, so no timer leaks.
+                    # cancel() (not deactivate()) fully removes the timer so it
+                    # can't fire after teardown; in finally so it never leaks.
                     timer.cancel()
                     _bf["running"] = False
 
@@ -963,10 +1088,8 @@ def render_setup_tab():
                             conn.execute("DELETE FROM jobs_fts")
                             if database.RAG_AVAILABLE:
                                 conn.execute("DELETE FROM job_embeddings")
-                            # Note: brain2_messages is NOT cleared here.
-                            # Brain 2 chat history is independent of the jobs
-                            # database. Use the dedicated 'Clear Brain 2 Chat'
-                            # button in Setup or the Market Analyzer panel.
+                            # brain2_messages is intentionally left alone — chat
+                            # history is independent; 'Clear Brain 2 Chat' handles it.
                             conn.commit()
                         finally:
                             conn.close()

@@ -43,8 +43,7 @@ def source_pill(source: str) -> str:
 
 
 def signal_pill(signal: str, culture_flags_json: str = "[]") -> str:
-    # If staffing/labeling was flagged, override the 'REAL' pill — REAL is
-    # misleading when the company is a real-but-staffing firm.
+    # Override REAL when staffing/labeling is flagged — REAL misleads for a staffing firm.
     try:
         flags = [f.lower() for f in json.loads(culture_flags_json or "[]")]
     except (json.JSONDecodeError, TypeError):
@@ -69,7 +68,6 @@ def status_dot_class(state: str) -> str:
     return {"running": "running", "done": "done", "error": "error"}.get(state, "idle")
 
 
-# Run a blocking call in a thread, return awaitable result.
 async def run_in_thread(fn, *args, **kwargs):
     import asyncio
     loop = asyncio.get_event_loop()

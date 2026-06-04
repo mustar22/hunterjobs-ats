@@ -52,7 +52,6 @@ def render_jobs_tab():
     def start_scan():
         s = runner_status.read_status()
         existing_pid = s["brain1"].get("pid")
-        # Real check: is there actually a brain1 process alive right now?
         if existing_pid and _is_pid_alive(existing_pid):
             ui.notify(
                 f"Brain 1 is already running (pid={existing_pid}). Stop it first.",
@@ -178,12 +177,11 @@ def render_jobs_tab():
             refresh_list()
         search_input.on("change", on_search)
         search_input.on("blur", on_search)
-        # Live update while typing (debounced by quasar's input event)
         search_input.on("keyup.enter", on_search)
 
     # ── Job list container ────────────────────────────────────────────────────
-    # Track last-known job count; if more arrive during a scan, show a refresh
-    # nudge instead of destroying the list (which kills open expansions).
+    # When new jobs arrive mid-scan, nudge rather than rebuild the list — a
+    # rebuild would close any open expansions.
     list_meta = {"last_count": -1, "last_query": None, "last_verdicts": None}
     list_container = ui.column().classes("w-full").style("padding: 0 16px;")
     refresh_nudge_container = ui.row().classes("w-full")\
@@ -210,7 +208,6 @@ def render_jobs_tab():
                 render_job_row(row, lambda: refresh_list(force=True))
 
     def check_for_new_jobs():
-        # Only show nudge if Brain 1 is running and there are more jobs than last render.
         if runner_status.read_status()["brain1"]["state"] != "running":
             return
         if (list_meta["last_query"] != state["query"]
@@ -257,11 +254,8 @@ def _render_notes_and_color(row: dict, refresh_list_fn):
             update_notes(job_id, notes_ta.value or "")
         notes_ta.on("blur", on_blur)
 
-        # Color swatch row
         ui.html('<div class="notes-label" style="margin-top: 10px;">Color label</div>')
         with ui.element("div").classes("swatch-row"):
-            # We render swatches as plain HTML clickable spans; NiceGUI lets us
-            # attach click handlers via .on('click') on ui.html elements.
             for color, cls, tooltip in COLOR_SWATCHES:
                 active = " active" if color == current_color else ""
                 swatch = ui.html(
@@ -287,7 +281,6 @@ def render_job_row(row: dict, refresh_list_fn):
         # NiceGUI's `.props()` accepts raw HTML attributes too
         job_row.props(f'data-color={row_color}')
     with job_row:
-        # Title row
         with ui.row().style("align-items: flex-start; justify-content: space-between; gap: 12px;"):
             with ui.column().style("gap: 2px; flex: 1; min-width: 0;"):
                 ui.html(f'<div class="job-title">{row.get("title","(no title)")}</div>')
@@ -319,7 +312,6 @@ def render_job_row(row: dict, refresh_list_fn):
                         row.get("culture_flags") or "[]",
                     ))
 
-        # Reject reason if any
         if row.get("reject_reason"):
             color = "var(--bad)" if "hard_reject" in row["reject_reason"] else "var(--text-dim)"
             ui.html(
@@ -327,7 +319,6 @@ def render_job_row(row: dict, refresh_list_fn):
                 f'{row["reject_reason"]}</div>'
             )
 
-        # Expandable: full listing
         with ui.expansion("Listing", icon=None).classes("w-full").style("margin-top: 10px;"):
             ui.html(
                 f'<div class="desc-scroll">'
@@ -342,23 +333,18 @@ def render_job_row(row: dict, refresh_list_fn):
                     f'Open on {row.get("source","listing")} ↗</a></div>'
                 )
 
-        # Expandable: company intel
         with ui.expansion("Company Intel", icon=None).classes("w-full"):
             render_company_intel(row, refresh_list_fn)
 
-        # Expandable: similar past applications (RAG)
         with ui.expansion("Similar Past Applications", icon=None).classes("w-full"):
             render_similar_applications(row)
 
-        # Expandable: contact & outreach (GOOD or MAYBE w/ gemma3)
         if row.get("verdict") in ("GOOD", "MAYBE"):
             with ui.expansion("Contact & Outreach", icon=None).classes("w-full"):
                 render_contact_section(row, refresh_list_fn)
 
-        # Notes + color
         _render_notes_and_color(row, refresh_list_fn)
 
-        # Action row
         with ui.row().style("margin-top: 10px; gap: 8px;"):
             _render_apply_button(row, refresh_list_fn)
 
