@@ -104,6 +104,55 @@ def _openrouter_model_picker(current_value: str, label: str):
     ).props("outlined").style("min-width: 420px;")
 
 
+# ── Gemma live model picker (Google AI Studio) ────────────────────────────────
+_GEMMA_MODELS_CACHE = None
+_GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+def _fetch_gemma_models(api_key: str) -> list[str]:
+    """Fetch + cache the Gemma model ids from Google AI Studio. Filters to Gemma
+    only (drops Gemini + embedding models). Returns [] WITHOUT caching on missing
+    key or failure, so a later render retries."""
+    global _GEMMA_MODELS_CACHE
+    if _GEMMA_MODELS_CACHE is not None:
+        return _GEMMA_MODELS_CACHE
+    if not api_key:
+        return []
+    try:
+        import requests
+        r = requests.get(_GEMINI_MODELS_URL, params={"key": api_key}, timeout=8)
+        r.raise_for_status()
+        out = []
+        for m in r.json().get("models", []):
+            name = (m.get("name") or "").split("/")[-1]
+            low = name.lower()
+            if "gemma" in low and "embedding" not in low and "gemini" not in low:
+                out.append(name)
+        out = sorted(set(out))
+        _GEMMA_MODELS_CACHE = out  # cache only on success
+        return out
+    except Exception:
+        return []
+
+
+def _gemma_model_picker(current_value: str, label: str, api_key: str):
+    """Searchable Gemma model picker; falls back to a free-text input when the
+    catalog is unavailable (no key / fetch failed). Mirrors the OpenRouter picker."""
+    current = (current_value or "gemma-4-26b-a4b-it").strip()
+    models = _fetch_gemma_models(api_key)
+    if not models:
+        return ui.input(
+            label=f"{label} (catalog unavailable — type a model id)",
+            value=current,
+        ).props("outlined").style("width: 420px;")
+    options = {m: m for m in models}
+    if current not in options:
+        options[current] = current
+    return ui.select(
+        options, value=current, with_input=True, label=f"{label} (type to search)",
+    ).props("outlined").style("min-width: 420px;")
+
+
 # ── Brain 2 backend label (single source of truth) ────────────────────────────
 _BACKEND_OPTIONS = {
     "gemini":    "Gemini",
@@ -789,6 +838,11 @@ def render_setup_tab():
                                    value=cfg.get("yc_max_team_size", 50),
                                    step=10, min=1, max=500)\
                 .props("outlined dense").style("width: 160px;")
+            # Hacker News "Who is hiring?" — single monthly thread, free APIs.
+            hn_cb = ui.checkbox("Hacker News (Who is hiring?)",
+                                value=bool(cfg.get("use_hn")))
+            hn_remote_cb = ui.checkbox("HN remote only",
+                                       value=bool(cfg.get("hn_remote_only", True)))
 
         ui.html('<div class="section-title">Brain 1 — Stage 1 Backend (job filter, high volume)</div>')
         ui.html(
@@ -804,6 +858,11 @@ def render_setup_tab():
              "lmstudio": "LM Studio (local)"},
             value=s1_current,
         ).style("min-width: 320px;")
+        with ui.column().style("gap: 8px;") as b1_gemma_s1_box:
+            b1_s1_gemma_model = _gemma_model_picker(
+                cfg.get("brain1_stage1_gemma_model", "gemma-4-26b-a4b-it"),
+                "Stage 1 Gemma model", keys.get("google", ""),
+            )
 
         ui.html('<div class="section-title">Brain 1 — Stage 2/3 Backend (company research + outreach)</div>')
         ui.html(
@@ -818,6 +877,15 @@ def render_setup_tab():
              "lmstudio": "LM Studio (local)"},
             value=s23_current,
         ).style("min-width: 320px;")
+        with ui.column().style("gap: 8px;") as b1_gemma_s23_box:
+            b1_s2_gemma_model = _gemma_model_picker(
+                cfg.get("brain1_stage2_gemma_model", "gemma-4-26b-a4b-it"),
+                "Stage 2 Gemma model (company research)", keys.get("google", ""),
+            )
+            b1_s3_gemma_model = _gemma_model_picker(
+                cfg.get("brain1_stage3_gemma_model", "gemma-4-26b-a4b-it"),
+                "Stage 3 Gemma model (outreach)", keys.get("google", ""),
+            )
 
         with ui.column().style("gap: 8px;") as b1_lmstudio_box:
             ui.html(
@@ -849,6 +917,8 @@ def render_setup_tab():
             b1_openrouter_box.set_visibility(
                 b1s1_select.value == "openrouter" or b1s23_select.value == "openrouter"
             )
+            b1_gemma_s1_box.set_visibility(b1s1_select.value == "gemma")
+            b1_gemma_s23_box.set_visibility(b1s23_select.value == "gemma")
 
         _refresh_b1_backend_boxes()
         b1s1_select.on("update:model-value", lambda _e: _refresh_b1_backend_boxes())
@@ -956,6 +1026,8 @@ def render_setup_tab():
                 "use_yc": bool(yc_cb.value),
                 "yc_remote_only": bool(yc_remote_cb.value),
                 "yc_max_team_size": int(yc_team_in.value or 50),
+                "use_hn": bool(hn_cb.value),
+                "hn_remote_only": bool(hn_remote_cb.value),
                 "theme": theme_select.value,
                 "profile": profile_ta.value,
                 "search_terms": terms_ta.value,
@@ -968,6 +1040,9 @@ def render_setup_tab():
                 "sources": sources,
                 "brain1_stage1_backend": b1s1_select.value,
                 "brain1_stage23_backend": b1s23_select.value,
+                "brain1_stage1_gemma_model": (b1_s1_gemma_model.value or "gemma-4-26b-a4b-it").strip(),
+                "brain1_stage2_gemma_model": (b1_s2_gemma_model.value or "gemma-4-26b-a4b-it").strip(),
+                "brain1_stage3_gemma_model": (b1_s3_gemma_model.value or "gemma-4-26b-a4b-it").strip(),
                 # Keep legacy key in sync for backwards compat (mirrors stage23 choice)
                 "brain1_backend": b1s23_select.value,
                 "brain1_lmstudio_url": b1_url.value,

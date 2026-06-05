@@ -8,7 +8,7 @@
     "linkedin"
   ],
   "results_wanted": 30,
-  "hours_old": 24,
+  "hours_old": 48,
   "brain1_backend": "gemma",
   "brain1_lmstudio_url": "http://localhost:1234/v1",
   "brain1_lmstudio_model": "",
@@ -28,5 +28,11 @@
   "yc_remote_only": false,
   "brain1_openrouter_model": "nvidia/nemotron-nano-9b-v2:free",
   "brain2_openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
-  "brain2_persona": ""
+  "brain2_persona": "",
+  "use_hn": true,
+  "hn_remote_only": false,
+  "hn_max_jobs": 200,
+  "brain1_stage1_gemma_model": "gemma-4-26b-a4b-it",
+  "brain1_stage2_gemma_model": "gemma-4-31b-it",
+  "brain1_stage3_gemma_model": "gemma-4-26b-a4b-it"
 }

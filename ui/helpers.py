@@ -23,19 +23,20 @@ def verdict_pill(verdict: str, reject_reason: str = "") -> str:
 
 
 def source_pill(source: str) -> str:
-    """Brand-colored badge showing where a job came from. Reuses the .pill
-    geometry; brand hexes are set inline since they aren't theme variables."""
+    """Brand-colored badge showing where a job came from."""
+    # source -> (label, css background, text color)
     brands = {
-        "linkedin": ("LinkedIn", "#0A66C2"),
-        "indeed":   ("Indeed",   "#003A9B"),
-        "yc":       ("YC",       "#FF6600"),
+        "linkedin": ("LinkedIn", "#0A66C2", "#fff"),
+        "indeed":   ("Indeed",   "#003A9B", "#fff"),
+        "yc":       ("YC",       "linear-gradient(90deg, #ff3d00, #ff8c00)", "#fff"),
+        "hn":       ("HN",       "linear-gradient(90deg, #ff8c00, #ffd000)", "#1a1300"),
     }
     key = (source or "").strip().lower()
     if key in brands:
-        label, color = brands[key]
+        label, bg, fg = brands[key]
         return (
-            f'<span class="pill" style="color: #fff; background: {color}; '
-            f'border: 1px solid {color};">{label}</span>'
+            f'<span class="pill" style="color: {fg}; background: {bg}; '
+            f'border: 1px solid transparent;">{label}</span>'
         )
     # Unknown/missing → neutral gray pill (theme-consistent), raw value or em dash.
     label = (source or "").strip() or "—"

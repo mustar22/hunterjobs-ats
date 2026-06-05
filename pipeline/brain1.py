@@ -51,6 +51,7 @@ from openai import OpenAI
 from core.config import OPENROUTER_URL
 from core.database import get_db_connection, init_db
 from core.schemas import JobFilter, CompanyResearch, WebContacts
+from pipeline.sources import hn
 import core.embeddings as embeddings
 import core.runner_status as runner_status
 
@@ -106,9 +107,15 @@ def load_keys() -> dict:
 
 
 # ── LLM client factory ────────────────────────────────────────────────────────
+DEFAULT_GEMMA_MODEL = "gemma-4-26b-a4b-it"
+
+
 def get_gemma_client_for_stage(cfg: dict, keys: dict, stage_group: str):
-    """stage_group: 'stage1' or 'stage23'. Each can use a different backend."""
-    backend = cfg.get(f"brain1_{stage_group}_backend") or cfg.get("brain1_backend", "gemma")
+    """stage_group: 'stage1', 'stage2', 'stage3' (or legacy 'stage23'). Stage 1
+    has its own backend; stages 2/3 share the 'stage23' backend but each picks
+    its own Gemma model."""
+    backend_group = "stage1" if stage_group == "stage1" else "stage23"
+    backend = cfg.get(f"brain1_{backend_group}_backend") or cfg.get("brain1_backend", "gemma")
 
     if backend == "lmstudio":
         base_url = cfg.get("brain1_lmstudio_url", "http://localhost:1234/v1")
@@ -141,12 +148,15 @@ def get_gemma_client_for_stage(cfg: dict, keys: dict, stage_group: str):
             "openrouter",
         )
 
-    return genai.Client(api_key=keys["google"]), "gemma-4-26b-a4b-it", "gemma"
+    # legacy 'stage23' resolves to the stage-2 model field.
+    model_key = "stage2" if stage_group == "stage23" else stage_group
+    model_name = (cfg.get(f"brain1_{model_key}_gemma_model") or DEFAULT_GEMMA_MODEL).strip()
+    return genai.Client(api_key=keys["google"]), model_name, "gemma"
 
 
-# Legacy single-backend helper (kept for compatibility with manual MAYBE buttons).
-def get_gemma_client(cfg: dict, keys: dict):
-    return get_gemma_client_for_stage(cfg, keys, "stage23")
+# Single-stage helper for the manual MAYBE buttons (stage2=research, stage3=contact).
+def get_gemma_client(cfg: dict, keys: dict, stage_group: str = "stage2"):
+    return get_gemma_client_for_stage(cfg, keys, stage_group)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -758,6 +768,46 @@ def gemma1_filter(client, model, backend, description: str, profile: str) -> Job
     return call_gemma(client, model, backend, system, prompt, JobFilter, stage="stage1")
 
 
+# A substring of 2-40 chars repeated 5+ times = a degenerate model loop
+# ("truth-truth-truth…"); cut it before it reaches the UI.
+_REPEAT_RE = re.compile(r"(.{2,40}?)\1{4,}", re.DOTALL)
+
+
+def _sanitize_summary(text: str, max_chars: int = 600) -> str:
+    """Defensive guard against runaway company_summary output: strip degenerate
+    repetition, then hard-cap length. Model-agnostic — protects the UI from any
+    backend that loops."""
+    s = (text or "").strip()
+    if not s:
+        return s
+    m = _REPEAT_RE.search(s)
+    if m:
+        s = (s[:m.start()] + m.group(1)).strip()
+    if len(s) > max_chars:
+        s = s[:max_chars].rstrip() + "…"
+    return s
+
+
+# Agency-specific signals only. Bare "data labeling"/"annotation" are deliberately
+# NOT here: those describe a legit product (e.g. Trace Labs) as often as an agency.
+_AGENCY_MARKERS = (
+    "staffing_agency", "staffing agency", "staffing firm",
+    "recruiting agency", "recruitment agency", "recruiting partner",
+    "staff augmentation", "we place candidates", "place candidates at",
+    "on behalf of our client", "on behalf of clients", "on behalf of our clients",
+    "body shop", "gig platform", "talent scaling", "network of talent",
+    "leverage a network", "managed it capabilities", "it consulting",
+)
+
+
+def _is_staffing_agency(culture_flags, summary: str) -> bool:
+    """True only on agency-specific signals (places people at other companies),
+    not on bare product-labeling terms."""
+    flags = " ".join((f or "").lower() for f in (culture_flags or []))
+    blob = f"{flags} {(summary or '').lower()}"
+    return any(m in blob for m in _AGENCY_MARKERS)
+
+
 def gemma2_research(client, model, backend, company: str, domain: str, stage: str = "stage2") -> CompanyResearch:
     # Validate domain — skip fetch entirely for garbage values like 'nan', '', None.
     domain_clean = (domain or "").strip().lower()
@@ -785,7 +835,9 @@ def gemma2_research(client, model, backend, company: str, domain: str, stage: st
         f"Company: {company}\nDomain: {domain}\n\n"
         f"=== WEBSITE CONTENT ===\n{site_content}"
     )
-    return call_gemma(client, model, backend, system, prompt, CompanyResearch, stage=stage)
+    r = call_gemma(client, model, backend, system, prompt, CompanyResearch, stage=stage)
+    r.company_summary = _sanitize_summary(r.company_summary)
+    return r
 
 
 def find_contacts(company: str, domain: str, github_pat: str,
@@ -1087,10 +1139,10 @@ def jobspy_enabled(sources: list[str]) -> bool:
     return bool(sources)
 
 
-def has_scrape_source(sources: list[str], use_yc: bool) -> bool:
-    """True when there is anything to scrape at all — JobSpy sites or YC.
-    When both are off there is genuinely nothing to do (vs. silently forcing LinkedIn)."""
-    return bool(sources) or bool(use_yc)
+def has_scrape_source(sources: list[str], use_yc: bool, use_hn: bool = False) -> bool:
+    """True when there is anything to scrape at all — JobSpy sites, YC, or HN.
+    When all are off there is genuinely nothing to do (vs. silently forcing LinkedIn)."""
+    return bool(sources) or bool(use_yc) or bool(use_hn)
 
 
 # ── Main entry: sequential Stage 1 → Stage 2 → Stage 3 ────────────────────────
@@ -1107,6 +1159,7 @@ def run_brain1() -> None:
     ]
     sources = cfg.get("sources", ["linkedin"])
     use_yc = bool(cfg.get("use_yc"))
+    use_hn = bool(cfg.get("use_hn"))
     results_wanted = int(cfg.get("results_wanted", 100))
     hours_old = int(cfg.get("hours_old", 72))
     github_pat = keys.get("github", "")
@@ -1114,21 +1167,23 @@ def run_brain1() -> None:
     # Two separate clients allow Stage 1 (filter, high volume) and Stage 2/3
     # (research+outreach, needs intelligence) to use different backends.
     s1_client, s1_model, s1_backend = get_gemma_client_for_stage(cfg, keys, "stage1")
-    s23_client, s23_model, s23_backend = get_gemma_client_for_stage(cfg, keys, "stage23")
+    s2_client, s2_model, s2_backend = get_gemma_client_for_stage(cfg, keys, "stage2")
+    s3_client, s3_model, s3_backend = get_gemma_client_for_stage(cfg, keys, "stage3")
 
     log.info("=" * 60)
     log.info(f"Brain 1 started")
     log.info(f"Stage 1 (filter):   backend={s1_backend} model={s1_model}")
-    log.info(f"Stage 2/3 (enrich): backend={s23_backend} model={s23_model}")
-    log.info(f"Terms: {len(search_terms)} | Rejects: {len(hard_rejects)} | Sources: {sources} | YC: {use_yc}")
+    log.info(f"Stage 2 (research): backend={s2_backend} model={s2_model}")
+    log.info(f"Stage 3 (outreach): backend={s3_backend} model={s3_model}")
+    log.info(f"Terms: {len(search_terms)} | Rejects: {len(hard_rejects)} | Sources: {sources} | YC: {use_yc} | HN: {use_hn}")
     log.info("=" * 60)
 
-    # Empty JobSpy sources is legit for a YC-only run; both off = nothing to do,
+    # Empty JobSpy sources is legit for a YC/HN-only run; all off = nothing to do,
     # so exit rather than silently forcing LinkedIn back on.
-    if not has_scrape_source(sources, use_yc):
+    if not has_scrape_source(sources, use_yc, use_hn):
         log.warning(
-            "No scrape sources enabled: JobSpy site list is empty and YC is off. "
-            "Nothing to scrape — enable LinkedIn/Indeed or Y Combinator in Setup."
+            "No scrape sources enabled: JobSpy site list is empty and YC/HN are off. "
+            "Nothing to scrape — enable LinkedIn/Indeed, Y Combinator, or Hacker News in Setup."
         )
         runner_status.start("brain1")
         runner_status.finish("brain1", error="no sources enabled")
@@ -1311,6 +1366,31 @@ def run_brain1() -> None:
                     aborted = True
                     break
 
+        # ── Hacker News "Who is hiring?" (single thread, scraped once) ────────
+        if not aborted and cfg.get("use_hn"):
+            runner_status.patch("brain1", stage1="scraping Hacker News 'Who is hiring?'")
+            log.info("[stage1] Scraping Hacker News 'Who is hiring?'")
+            hn_rows = hn.scrape_hn_jobs(cfg)
+            log.info(f"[stage1] HN returned {len(hn_rows)} listings")
+            # Same pre-Stage-1 filters as YC (the filters are source-agnostic).
+            if cfg.get("hn_remote_only", True):
+                before = len(hn_rows)
+                hn_rows = apply_yc_remote_filter(hn_rows, True)
+                log.info(
+                    f"[stage1] HN remote filter: dropped {before - len(hn_rows)} "
+                    f"non-remote, kept {len(hn_rows)}"
+                )
+            before = len(hn_rows)
+            hn_rows = apply_yc_date_filter(hn_rows, hours_old)
+            log.info(
+                f"[stage1] HN date filter (<= {hours_old}h): dropped "
+                f"{before - len(hn_rows)} stale/undated, kept {len(hn_rows)}"
+            )
+            for row in hn_rows:
+                if not _process_row(row, "(HN)"):
+                    aborted = True
+                    break
+
         # ── Stage 1 done; start Stage 2 on collected GOODs ────────────────────
         if aborted:
             runner_status.patch("brain1", stage1="aborted (dashboard closed)")
@@ -1340,43 +1420,26 @@ def run_brain1() -> None:
                 )
                 try:
                     research = gemma2_research(
-                        s23_client, s23_model, s23_backend,
+                        s2_client, s2_model, s2_backend,
                         job["company"], job["domain"],
                     )
                     update_job_research(conn, job["id"], research)
                     job["company_summary"] = research.company_summary
 
-                    # Demote on staffing/labeling/IT consulting detection.
-                    flags_lower = [f.lower() for f in research.culture_flags]
-                    summary_lower = (research.company_summary or "").lower()
-                    staffing_markers = (
-                        "staffing_agency", "data_labeling", "staffing",
-                        "recruiting agency", "body shop", "gig platform",
-                        "labeling service", "annotation service",
-                    )
-                    summary_markers = (
-                        "staffing", "recruiting agency", "data labeling",
-                        "ai training", "annotation service",
-                        "talent scaling", "network of talent",
-                        "leverage a network", "managed it capabilities",
-                        "it consulting",
-                    )
-                    if (
-                        any(m in " ".join(flags_lower) for m in staffing_markers)
-                        or any(m in summary_lower for m in summary_markers)
-                    ):
+                    # Demote only on agency signals, not bare product-labeling.
+                    if _is_staffing_agency(research.culture_flags, research.company_summary):
                         conn.execute(
                             "UPDATE jobs SET verdict=?, reject_reason=? WHERE id=?",
                             (
                                 "BAD",
-                                "stage2_demoted_from_GOOD: staffing/labeling agency",
+                                "stage2_demoted_from_GOOD: staffing/recruiting agency",
                                 job["id"],
                             ),
                         )
                         conn.commit()
                         log.info(
                             f"[stage2] [{i}/{len(good_jobs)}] {job['company']} "
-                            f"-> DEMOTED (staffing/labeling)"
+                            f"-> DEMOTED (staffing/recruiting)"
                         )
                     else:
                         survivors.append(job)
@@ -1407,7 +1470,7 @@ def run_brain1() -> None:
                 try:
                     contacts = find_contacts(
                         job["company"], job["domain"], github_pat,
-                        s23_client, s23_model, s23_backend,
+                        s3_client, s3_model, s3_backend,
                     )
                     update_job_outreach(conn, job["id"], contacts)
                     log.info(
@@ -1447,7 +1510,7 @@ def enrich_company_for_job(job_id: str) -> bool:
     Also demotes the job to BAD if Gemma 2 detects staffing/labeling agency."""
     cfg = load_config()
     keys = load_keys()
-    client, model, backend = get_gemma_client(cfg, keys)
+    client, model, backend = get_gemma_client(cfg, keys, "stage2")
     conn = get_db_connection()
     try:
         job = load_job(conn, job_id)
@@ -1460,35 +1523,20 @@ def enrich_company_for_job(job_id: str) -> bool:
             )
             update_job_research(conn, job_id, r)
 
-            flags_lower = [f.lower() for f in r.culture_flags]
-            summary_lower = (r.company_summary or "").lower()
-            staffing_markers = (
-                "staffing_agency", "data_labeling", "staffing", "recruiting agency",
-                "body shop", "gig platform", "labeling service", "annotation service",
-            )
-            summary_markers = (
-                "staffing", "recruiting agency", "data labeling",
-                "ai training", "annotation service",
-                "talent scaling", "network of talent", "leverage a network",
-                "managed it capabilities", "it consulting",
-            )
-            if (
-                any(m in " ".join(flags_lower) for m in staffing_markers)
-                or any(m in summary_lower for m in summary_markers)
-            ):
+            if _is_staffing_agency(r.culture_flags, r.company_summary):
                 original = job.get("verdict", "?")
                 conn.execute(
                     "UPDATE jobs SET verdict=?, reject_reason=? WHERE id=?",
                     (
                         "BAD",
-                        f"stage2_demoted_from_{original}: staffing/labeling agency",
+                        f"stage2_demoted_from_{original}: staffing/recruiting agency",
                         job_id,
                     ),
                 )
                 conn.commit()
                 log.info(
                     f"[manual stage2] {job['company']} -> DEMOTED from {original} "
-                    f"(staffing/labeling)"
+                    f"(staffing/recruiting)"
                 )
             else:
                 log.info(f"[manual stage2] {job['company']} -> {r.hiring_signal}")
@@ -1505,7 +1553,7 @@ def find_contact_for_job(job_id: str) -> bool:
     Team-page + GitHub + web-search OSINT, permutation fallback. No fabricated names."""
     cfg = load_config()
     keys = load_keys()
-    client, model, backend = get_gemma_client(cfg, keys)
+    client, model, backend = get_gemma_client(cfg, keys, "stage3")
     github_pat = keys.get("github", "")
     conn = get_db_connection()
     try:
