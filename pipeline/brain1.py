@@ -36,11 +36,12 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
+from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 from jobspy import scrape_jobs
 from google import genai
@@ -49,7 +50,7 @@ from openai import OpenAI
 
 from core.config import OPENROUTER_URL
 from core.database import get_db_connection, init_db
-from core.schemas import JobFilter, CompanyResearch
+from core.schemas import JobFilter, CompanyResearch, WebContacts
 import core.embeddings as embeddings
 import core.runner_status as runner_status
 
@@ -180,55 +181,325 @@ def scrape_markdown(url: str, timeout: int = 5, max_chars: int = 10_000) -> str:
         return f"(fetch failed: {e})"
 
 
-def github_contacts(company: str, github_pat: str, limit: int = 5) -> list[dict]:
-    """Best-effort GitHub OSINT for REAL public commit contacts.
+# ── contact OSINT: team-page scrape ───────────────────────────────────────────
+_NAME_RE = re.compile(r"^[A-Z][a-zA-Z'’.\-]+(?: [A-Z][a-zA-Z'’.\-]+){1,2}$")
+# Word-boundary matching so short tokens don't match inside words
+# (e.g. "coo" must not match "cookie", "vp" must not match "vpn").
+_ROLE_RE = re.compile(
+    r"\b(ceo|cto|coo|cfo|chief|co-?founder|founder|president|vice president|vp|"
+    r"head of|director|lead|engineer|manager|officer|partner|principal)\b",
+    re.I,
+)
+_DM_RE = re.compile(r"\b(ceo|cto|coo|cfo|chief|co-?founder|founder)\b", re.I)
+_LEAD_RE = re.compile(
+    r"\b(president|vice president|vp|head of|director|lead|principal)\b", re.I
+)
 
-    Returns a deduped list of {name, email, login, source:"github"} drawn from
-    public PushEvent commit authors. Real data only — empty list if nothing found.
+
+def _looks_like_title(s: str) -> bool:
+    s2 = (s or "").strip()
+    return 0 < len(s2) <= 60 and bool(_ROLE_RE.search(s2))
+
+
+def _title_rank(title: str) -> int:
+    """0 = decision-maker, 1 = other leadership, 2 = everyone else."""
+    t = title or ""
+    if _DM_RE.search(t):
+        return 0
+    if _LEAD_RE.search(t):
+        return 1
+    return 2
+
+
+# Tokens that mark a string as a headline/section/brand rather than a person.
+_NON_NAME_WORDS = {
+    "introducing", "meet", "welcome", "announcing", "presenting", "discover",
+    "explore", "learn", "read", "more", "get", "start", "started", "join",
+    "our", "your", "the", "we", "us", "about", "contact", "team", "careers",
+    "career", "jobs", "home", "pricing", "privacy", "policy", "terms", "blog",
+    "news", "login", "signin", "signup", "sign", "new", "now", "today", "free",
+    "demo", "book", "request", "company", "mission", "vision", "values",
+    "product", "products", "platform", "solutions", "services", "features",
+    "ai", "app", "inc", "llc", "ltd", "co", "corp", "gmbh", "io", "hq",
+    "labs", "lab", "tech", "world", "first", "best",
+}
+
+
+def _is_real_person_name(name: str, company: str = "") -> bool:
+    """Precision-first guard: accept only strings that look like an actual
+    person's name (2-3 capitalized tokens), rejecting marketing headlines
+    ('Introducing Finn AI'), all-caps brands/acronyms ('Northeast OBGYN'),
+    and strings echoing the company/product name."""
+    s = (name or "").strip()
+    if not _NAME_RE.match(s):
+        return False
+    toks = s.split()
+    if not (2 <= len(toks) <= 3):
+        return False
+    company_toks = {
+        t for t in re.split(r"[^a-z0-9]+", (company or "").lower()) if len(t) > 2
+    }
+    for t in toks:
+        low = t.strip(".'’-").lower()
+        if not low or low in _NON_NAME_WORDS:
+            return False
+        # all-caps acronym/brand token (AI, OBGYN, LLC) — not a given/sur-name
+        if len(t) >= 2 and t.isupper():
+            return False
+        if low in company_toks:  # echoes the company/product brand
+            return False
+    return True
+
+
+def _extract_team_from_html(html: str, company: str = "") -> list[dict]:
+    """Heuristic team-card extraction: a person-name element with a role string
+    nearby. Best-effort — returns only confidently paired (name, title)."""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return []
+    found: list[dict] = []
+    seen: set[str] = set()
+    for el in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6",
+                             "strong", "b", "span", "div", "p", "a"]):
+        name = el.get_text(" ", strip=True)
+        if not _is_real_person_name(name, company) or name.lower() in seen:
+            continue
+        title = ""
+        nearby = []
+        sib = el.find_next_sibling()
+        if sib:
+            nearby.append(sib.get_text(" ", strip=True))
+        if el.parent:
+            nearby.append(el.parent.get_text(" ", strip=True))
+        for chunk in nearby:
+            for frag in re.split(r"[\n|•·,/]| - | — ", chunk):
+                if _looks_like_title(frag) and name.lower() not in frag.lower():
+                    title = frag.strip()
+                    break
+            if title:
+                break
+        if title:
+            seen.add(name.lower())
+            found.append({
+                "name": name, "title": title, "email": "",
+                "source": "team_page", "confidence": "verified",
+            })
+    return found
+
+
+def scrape_team_contacts(domain: str, company: str = "", timeout: int = 5,
+                         limit: int = 8) -> list[dict]:
+    """Fetch homepage + common team pages, extract real (name, title) pairs.
+    Every fetch is isolated in try/except → skips on failure, never raises."""
+    cdomain = clean_domain(domain)
+    if not cdomain:
+        return []
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; HunterJobsBot/1.0)"}
+    contacts: list[dict] = []
+    seen: set[str] = set()
+    company_toks = {
+        t for t in re.split(r"[^a-z0-9]+", (company or "").lower()) if len(t) > 2
+    }
+    for path in ("", "/team", "/about", "/about-us", "/company", "/people"):
+        try:
+            r = requests.get(f"https://{cdomain}{path}", headers=headers, timeout=timeout)
+            r.raise_for_status()
+            html = r.text
+        except Exception:
+            continue
+        page = _extract_team_from_html(html, company)
+        # Wrong-site guard: names found but the page title never references the
+        # company → the fetch likely landed on an unrelated site (Prosper case).
+        if page and company_toks:
+            try:
+                title = (BeautifulSoup(html, "html.parser").title.string or "").lower()
+            except Exception:
+                title = ""
+            if title and not any(t in title for t in company_toks):
+                log.warning(
+                    f"[stage3] team page '{cdomain}{path}' title "
+                    f"'{title.strip()[:60]}' doesn't reference '{company}' — "
+                    f"names may be from an unrelated site"
+                )
+        for c in page:
+            if c["name"].lower() in seen:
+                continue
+            seen.add(c["name"].lower())
+            contacts.append(c)
+            if len(contacts) >= limit:
+                return contacts
+        if len(contacts) >= 3:  # found a real team page; stop probing further paths
+            break
+    return contacts
+
+
+# ── contact OSINT: web search (ddgs) → LLM snippet parse ──────────────────────
+def web_search_contacts(company: str, domain: str,
+                        client=None, model=None, backend=None) -> list[dict]:
+    """ddgs search for the company's leadership, then let the stage-23 LLM extract
+    any named person from the snippets. Fully contained: ANY failure → []."""
+    if not company or client is None:
+        return []
+    try:
+        from ddgs import DDGS
+        query = f"{company} founder OR CEO OR CTO"
+        results = DDGS(timeout=8).text(query, max_results=5)  # new instance per call
+        snippets = "\n".join(
+            f"{r.get('title', '')}: {r.get('body', '')}" for r in (results or [])
+        ).strip()
+    except Exception as e:
+        log.warning(f"[stage3] web search failed (skipping): {e}")
+        return []
+    if not snippets:
+        return []
+    try:
+        system = (
+            "Extract real people named as founders/leadership of the company in "
+            "these web search snippets. Include ONLY names explicitly present in "
+            "the text. Never invent anyone. Empty list if no one is clearly named."
+        )
+        prompt = f"Company: {company}\n\n=== SEARCH SNIPPETS ===\n{snippets}"
+        result = call_gemma(client, model, backend, system, prompt,
+                            WebContacts, stage="stage3")
+        out = []
+        for c in result.contacts:
+            nm = (c.name or "").strip()
+            if nm:
+                out.append({
+                    "name": nm, "title": (c.title or "").strip(), "email": "",
+                    "source": "web", "confidence": "reported",
+                })
+        return out
+    except Exception as e:
+        log.warning(f"[stage3] web snippet parse failed (skipping): {e}")
+        return []
+
+
+_CONF_TIER = {"verified": 0, "reported": 1, "pattern": 2}
+
+
+def _merge_contacts(groups: list[list[dict]]) -> list[dict]:
+    """Dedupe across sources by email and by name; enrich a kept entry with a
+    missing email/title from a later duplicate. Group order = source priority."""
+    out: list[dict] = []
+    by_name: dict[str, dict] = {}
+    seen_emails: set[str] = set()
+    for group in groups:
+        for c in group:
+            name = (c.get("name") or "").strip()
+            email = (c.get("email") or "").strip().lower()
+            nk = name.lower()
+            if email and email in seen_emails:
+                continue
+            if nk and nk in by_name:
+                ex = by_name[nk]
+                if email and not ex.get("email"):
+                    ex["email"] = c.get("email")
+                if not ex.get("title") and c.get("title"):
+                    ex["title"] = c["title"]
+                if email:
+                    seen_emails.add(email)
+                continue
+            out.append(c)
+            if nk:
+                by_name[nk] = c
+            if email:
+                seen_emails.add(email)
+    return out
+
+
+def github_contacts(company: str, github_pat: str, domain: str = "",
+                    limit: int = 5) -> list[dict]:
+    """Resolve the company to a GitHub ORG, then return its PUBLIC members as
+    real contacts {name, title, email, login, source:"github"}.
+
+    Org membership is public-only here. Many orgs hide their members, so this
+    is often sparse or empty — that's fine: the path's only job is "real names
+    of people at the org", and Part-2 permutation turns those names into emails.
+    No user-search fallback — empty-but-honest beats unrelated strangers. Real
+    data only; every request is contained → empty list on any failure.
     """
     if not github_pat or not company:
         return []
+    from urllib.parse import quote
+
     headers = {
         "Authorization": f"token {github_pat}",
         "Accept": "application/vnd.github.v3+json",
     }
+
+    def _get(url):
+        try:
+            r = requests.get(url, headers=headers, timeout=5)
+            if r.status_code != 200:
+                log.warning(f"[stage3] github {r.status_code} for {url}")
+                return None
+            return r.json()
+        except Exception as e:
+            log.warning(f"[stage3] github request failed ({url}): {e}")
+            return None
+
+    # Candidate org logins, most-precise first: domain slug, company slug(s).
+    candidates: list[str] = []
+    cdomain = clean_domain(domain)
+    if cdomain:
+        candidates.append(cdomain.split(".")[0])
+    name_slug = re.sub(r"[^a-z0-9]", "", company.lower())
+    name_hyphen = re.sub(r"[^a-z0-9]+", "-", company.lower()).strip("-")
+    for s in (name_slug, name_hyphen):
+        if s and s not in candidates:
+            candidates.append(s)
+
+    confirmed: list[str] = []
+    seen_login: set[str] = set()
+    for slug in candidates:
+        org = _get(f"https://api.github.com/orgs/{slug}")
+        if org and org.get("login") and org["login"].lower() not in seen_login:
+            seen_login.add(org["login"].lower())
+            confirmed.append(org["login"])
+
+    # type:org search catches orgs whose login differs from the slug.
+    sdata = _get(
+        f"https://api.github.com/search/users"
+        f"?q={quote(f'{company} type:org')}&per_page=3"
+    )
+    for it in (sdata or {}).get("items", []) or []:
+        login = it.get("login")
+        if login and login.lower() not in seen_login:
+            seen_login.add(login.lower())
+            confirmed.append(login)
+
+    if not confirmed:
+        log.info(f"[stage3] github: no org resolved for '{company}'")
+        return []
+
     contacts: list[dict] = []
-    seen_emails: set[str] = set()
-    try:
-        res = requests.get(
-            f"https://api.github.com/search/users?q={company}&per_page=3",
-            headers=headers,
-            timeout=5,
-        )
-        users = res.json().get("items") or []
-        for user in users:
-            login = user.get("login")
-            if not login:
+    seen_member: set[str] = set()
+    for org_login in confirmed:
+        members = _get(
+            f"https://api.github.com/orgs/{org_login}/public_members?per_page=10"
+        ) or []
+        for m in members:
+            mlogin = m.get("login")
+            if not mlogin or mlogin in seen_member:
                 continue
-            events = requests.get(
-                f"https://api.github.com/users/{login}/events/public",
-                headers=headers,
-                timeout=5,
-            ).json()
-            for event in events:
-                if event.get("type") != "PushEvent":
-                    continue
-                for commit in event.get("payload", {}).get("commits", []):
-                    author = commit.get("author", {}) or {}
-                    email = (author.get("email") or "").strip()
-                    if not email or "noreply" in email or email in seen_emails:
-                        continue
-                    seen_emails.add(email)
-                    contacts.append({
-                        "name": (author.get("name") or "").strip(),
-                        "email": email,
-                        "login": login,
-                        "source": "github",
-                    })
-                    if len(contacts) >= limit:
-                        return contacts
-    except Exception:
-        return contacts
+            seen_member.add(mlogin)
+            prof = _get(f"https://api.github.com/users/{mlogin}") or {}
+            name = (prof.get("name") or "").strip()
+            email = (prof.get("email") or "").strip()
+            if email and "noreply" in email.lower():
+                email = ""  # GitHub's privacy alias — useless for outreach
+            if not name and not email:
+                continue  # anonymous handle, nothing usable
+            contacts.append({
+                "name": name, "title": "", "email": email,
+                "login": mlogin, "source": "github",
+            })
+            if len(contacts) >= limit:
+                return contacts
+    if not contacts:
+        log.info(f"[stage3] github: org(s) {confirmed} expose no usable public members")
     return contacts
 
 
@@ -517,36 +788,56 @@ def gemma2_research(client, model, backend, company: str, domain: str, stage: st
     return call_gemma(client, model, backend, system, prompt, CompanyResearch, stage=stage)
 
 
-def find_contacts(company: str, domain: str, github_pat: str) -> list[dict]:
-    """Build a contacts list from REAL data only — no LLM, no fabricated names.
+def find_contacts(company: str, domain: str, github_pat: str,
+                  client=None, model=None, backend=None) -> list[dict]:
+    """Build a contacts list from REAL data only — no fabricated names.
 
-    Verified GitHub committers first, then (if the domain is usable) role-based
-    permutation guesses with no person name. Empty list = honest "no contact".
+    Merges (in priority order) team-page scrape, GitHub committers, web-search
+    snippets parsed by the LLM, then role-based permutation fallback. Every
+    source fails to [] independently. Deduped, decision-makers sorted first.
     Each contact: {name, title, email, source, confidence}.
     """
-    contacts: list[dict] = []
+    team = scrape_team_contacts(domain, company)
+    gh = [{
+        "name": g.get("name") or "", "title": g.get("title") or "",
+        "email": g.get("email") or "",
+        "source": "github",
+        "confidence": "verified" if g.get("email") else "reported",
+    } for g in github_contacts(company, github_pat, domain)]
+    web = web_search_contacts(company, domain, client, model, backend)
 
-    for gh in github_contacts(company, github_pat):
-        contacts.append({
-            "name": gh.get("name", ""),
-            "title": "",
-            "email": gh["email"],
-            "source": "github",
-            "confidence": "verified",
-        })
-
+    perm = []
     cdomain = clean_domain(domain)
     if cdomain:
         for local in ("founder", "hello"):
-            contacts.append({
-                "name": "",
-                "title": "Founder / Eng lead — unverified",
+            perm.append({
+                "name": "", "title": "Founder / Eng lead — unverified",
                 "email": f"{local}@{cdomain}",
-                "source": "permutation",
-                "confidence": "pattern",
+                "source": "permutation", "confidence": "pattern",
             })
 
-    return contacts
+    merged = _merge_contacts([team, gh, web, perm])
+
+    # Connect real names (team/web/github) that lack an email to a usable
+    # pattern address — this is what makes the named people actually contactable.
+    # The real name + title stay attached; only the email is inferred.
+    if cdomain:
+        for c in merged:
+            if (c.get("name") and not c.get("email")
+                    and c.get("source") in ("team_page", "web", "github")):
+                cands = permutation_emails(c["name"], cdomain)
+                if cands:
+                    c["email"] = cands[0]
+                    c["confidence"] = "pattern"
+                    c["source"] = f"{c['source']}+permutation"
+
+    for c in merged:
+        c.setdefault("name", "")
+        c.setdefault("title", "")
+        c.setdefault("email", "")
+    merged.sort(key=lambda c: (_CONF_TIER.get(c.get("confidence"), 3),
+                               _title_rank(c.get("title", ""))))
+    return merged
 
 
 # ── DB write helpers ──────────────────────────────────────────────────────────
@@ -724,6 +1015,45 @@ def apply_yc_remote_filter(rows: list[dict], remote_only: bool) -> list[dict]:
     if not remote_only:
         return rows
     return [r for r in rows if r.get("is_remote") is not False]
+
+
+def _parse_yc_date(s: str):
+    """Parse a YC row's date_posted (ISO 'YYYY-MM-DD' from the company ATS) to a
+    date. Returns None when empty or unparseable."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+
+def apply_yc_date_filter(rows: list[dict], hours_old: int,
+                         now: datetime | None = None) -> list[dict]:
+    """Keep only YC rows whose date_posted falls within the last `hours_old`
+    hours — the freshness window JobSpy enforces server-side but YC has no param
+    for, so stale 2024/2025 listings would otherwise leak in.
+
+    YC dates are day-granular ISO strings from the company ATS (Greenhouse
+    updated_at / Lever createdAt / Ashby publishedAt), so the window is compared
+    at day granularity (erring toward inclusion at the boundary). Undated or
+    unparseable rows are DROPPED, not kept: we can't confirm they're fresh, and
+    silently treating them as fresh is exactly the stale-leak bug. hours_old<=0
+    disables the filter (keep all)."""
+    if not hours_old or hours_old <= 0:
+        return rows
+    now = now or datetime.now(timezone.utc)
+    cutoff_date = (now - timedelta(hours=hours_old)).date()
+    kept = []
+    for r in rows:
+        d = _parse_yc_date(str(r.get("date_posted") or ""))
+        if d is not None and d >= cutoff_date:
+            kept.append(r)
+    return kept
 
 
 def safe_scrape_yc(cfg: dict):
@@ -968,6 +1298,14 @@ def run_brain1() -> None:
                     f"[stage1] YC remote filter: dropped {before - len(yc_rows)} "
                     f"non-remote, kept {len(yc_rows)}"
                 )
+            # YC bypasses JobSpy's server-side hours_old, so apply the same
+            # freshness window here before Stage 1 (stale jobs never hit Gemma).
+            before = len(yc_rows)
+            yc_rows = apply_yc_date_filter(yc_rows, hours_old)
+            log.info(
+                f"[stage1] YC date filter (<= {hours_old}h): dropped "
+                f"{before - len(yc_rows)} stale/undated, kept {len(yc_rows)}"
+            )
             for row in yc_rows:
                 if not _process_row(row, "(YC)"):
                     aborted = True
@@ -1069,6 +1407,7 @@ def run_brain1() -> None:
                 try:
                     contacts = find_contacts(
                         job["company"], job["domain"], github_pat,
+                        s23_client, s23_model, s23_backend,
                     )
                     update_job_outreach(conn, job["id"], contacts)
                     log.info(
@@ -1163,8 +1502,10 @@ def enrich_company_for_job(job_id: str) -> bool:
 
 def find_contact_for_job(job_id: str) -> bool:
     """Find real contacts for a single job. Blocking; for the 'Find Contact' button.
-    No LLM — GitHub OSINT + permutation only."""
+    Team-page + GitHub + web-search OSINT, permutation fallback. No fabricated names."""
+    cfg = load_config()
     keys = load_keys()
+    client, model, backend = get_gemma_client(cfg, keys)
     github_pat = keys.get("github", "")
     conn = get_db_connection()
     try:
@@ -1174,6 +1515,7 @@ def find_contact_for_job(job_id: str) -> bool:
         try:
             contacts = find_contacts(
                 job["company"], job["domain"], github_pat,
+                client, model, backend,
             )
             update_job_outreach(conn, job_id, contacts)
             log.info(f"[manual stage3] {len(contacts)} contact(s) for {job['company']}")
@@ -1181,6 +1523,93 @@ def find_contact_for_job(job_id: str) -> bool:
         except Exception as e:
             log.error(f"[manual stage3] failed for {job_id}: {e}")
             return False
+    finally:
+        conn.close()
+
+
+# ── On-demand per-person email search (точечный, UI-triggered only) ────────────
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+
+
+def search_person_email(name: str, company: str, domain: str = "",
+                        timeout: int = 8) -> str:
+    """Targeted ddgs search for ONE person's work email. Prefers an address on
+    the company domain; falls back to the first non-noreply email only when no
+    company domain is known. Returns '' on any failure / no result. Fully
+    contained — never raises."""
+    name = (name or "").strip()
+    if not name:
+        return ""
+    try:
+        from ddgs import DDGS
+        query = f'"{name}" {company} email'.strip()
+        results = DDGS(timeout=timeout).text(query, max_results=5)
+    except Exception as e:
+        log.warning(f"[contacts] email search failed for {name} (skipping): {e}")
+        return ""
+    blob = " ".join(
+        f"{r.get('title', '')} {r.get('body', '')}" for r in (results or [])
+    )
+    emails = [e for e in _EMAIL_RE.findall(blob) if "noreply" not in e.lower()]
+    if not emails:
+        return ""
+    cdomain = clean_domain(domain)
+    if cdomain:
+        for e in emails:
+            if e.lower().endswith("@" + cdomain) or e.lower().endswith("." + cdomain):
+                return e
+        return ""  # precision: a stray third-party email is worse than none
+    return emails[0]
+
+
+def find_emails_for_contacts(job_id: str, indices: list[int],
+                             delay: float = 2.0) -> dict:
+    """On-demand email enrichment for the SELECTED contacts of one job. Runs
+    one ddgs search per ticked person, sequentially, with a delay between people
+    (ddgs throttles aggressively). Each search is contained → a failure skips
+    that person, never blocks the rest. Writes results back and returns
+    {"found": [names], "not_found": [names]}."""
+    report: dict = {"found": [], "not_found": []}
+    conn = get_db_connection()
+    try:
+        job = load_job(conn, job_id)
+        if not job:
+            return report
+        try:
+            contacts = json.loads(job.get("contacts") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            contacts = []
+        company = job.get("company") or ""
+        domain = job.get("domain") or ""
+        targets = [i for i in (indices or []) if 0 <= i < len(contacts)]
+        for n, i in enumerate(targets):
+            c = contacts[i]
+            name = (c.get("name") or "").strip()
+            label = name or (c.get("email") or "unknown")
+            if not name:
+                report["not_found"].append(label)
+                continue
+            email = search_person_email(name, company, domain)
+            if email:
+                c["email"] = email
+                c["confidence"] = "reported"
+                src = c.get("source") or "web"
+                if "search" not in src:
+                    c["source"] = f"{src}+search"
+                report["found"].append(name)
+            else:
+                report["not_found"].append(name)
+            if n < len(targets) - 1:
+                time.sleep(delay)  # quota-safe spacing between ddgs calls
+        update_job_outreach(conn, job_id, contacts)
+        log.info(
+            f"[contacts] email search for '{job.get('company')}': "
+            f"found {len(report['found'])}, missed {len(report['not_found'])}"
+        )
+        return report
+    except Exception as e:
+        log.error(f"[contacts] find_emails_for_contacts failed for {job_id}: {e}")
+        return report
     finally:
         conn.close()
 

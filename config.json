@@ -7,7 +7,7 @@
   "sources": [
     "linkedin"
   ],
-  "results_wanted": 50,
+  "results_wanted": 30,
   "hours_old": 24,
   "brain1_backend": "gemma",
   "brain1_lmstudio_url": "http://localhost:1234/v1",

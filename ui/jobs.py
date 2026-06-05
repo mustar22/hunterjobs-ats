@@ -520,9 +520,11 @@ def render_contact_section(row: dict, refresh_list_fn):
     if contacts:
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 6px;">'
-            'Real contacts found &mdash; pick one to reach out to:</div>'
+            'Real contacts found &mdash; click a card to pick one, or tick people '
+            'and run a targeted email search:</div>'
         )
         cards = []
+        checks: dict[int, object] = {}
 
         def make_pick(el):
             def _pick(_e):
@@ -531,25 +533,85 @@ def render_contact_section(row: dict, refresh_list_fn):
                 el.style("border: 1px solid var(--accent);")
             return _pick
 
-        for c in contacts:
+        for idx, c in enumerate(contacts):
             name = _esc(c.get("name")) or "unknown"
             title = _esc(c.get("title")) or "—"
-            email = _esc(c.get("email")) or "—"
             conf = _esc(c.get("confidence")) or "—"
             src = _esc(c.get("source")) or "—"
-            card = ui.element("div").style(
-                "cursor: pointer; padding: 6px 8px; border: 1px solid var(--border); "
-                "border-radius: 6px; margin-bottom: 4px;"
+            # Orange "minus" state only when BOTH web search and permutation
+            # produced nothing → the contact genuinely has no email at all.
+            has_email = bool((c.get("email") or "").strip())
+            email = _esc(c.get("email"))
+            card_style = (
+                "padding: 6px 8px; border-radius: 6px; margin-bottom: 4px; "
             )
+            card_style += (
+                "border: 1px solid var(--border);" if has_email
+                else "border: 1px dashed var(--maybe); opacity: 0.85;"
+            )
+            card = ui.element("div").style(card_style)
             with card:
-                ui.html(
-                    f'<div style="font-size: 13.5px;"><strong>{name}</strong> &mdash; {title}</div>'
-                    f'<div class="mono" style="font-size: 12px; color: var(--text-dim);">'
-                    f'{email} <span style="color: var(--text-faint);">'
-                    f'({conf} via {src})</span></div>'
-                )
-            card.on("click", make_pick(card))
+                with ui.row().style("align-items: center; gap: 8px; flex-wrap: nowrap;"):
+                    checks[idx] = ui.checkbox().props("dense")
+                    body = ui.element("div").style("cursor: pointer; flex: 1; min-width: 0;")
+                    with body:
+                        if has_email:
+                            ui.html(
+                                f'<div style="font-size: 13.5px;"><strong>{name}</strong> &mdash; {title}</div>'
+                                f'<div class="mono" style="font-size: 12px; color: var(--text-dim);">'
+                                f'{email} <span style="color: var(--text-faint);">'
+                                f'({conf} via {src})</span></div>'
+                            )
+                        else:
+                            ui.html(
+                                f'<div style="font-size: 13.5px; color: var(--text-dim);">'
+                                f'<strong>{name}</strong> &mdash; {title}</div>'
+                                f'<div class="mono" style="font-size: 12px; color: var(--maybe);">'
+                                f'&#8722; no email found '
+                                f'<span style="color: var(--text-faint);">(via {src})</span></div>'
+                            )
+                    body.on("click", make_pick(card))
             cards.append(card)
+
+        find_btn = ui.button("Find emails for selected").classes("btn-ghost")\
+            .style("font-size: 12px; margin-top: 6px;")
+
+        async def do_find_emails(jid=row["id"]):
+            idxs = [i for i, cb in checks.items() if cb.value]
+            if not idxs:
+                safe_notify("Tick at least one contact first.", type="warning")
+                return
+            try:
+                find_btn.props("loading")
+                find_btn.disable()
+            except RuntimeError:
+                pass
+            report = await run_in_thread(
+                brain1.find_emails_for_contacts, jid, idxs
+            )
+            try:
+                find_btn.enable()
+                find_btn.props(remove="loading")
+            except RuntimeError:
+                pass
+            found = report.get("found") or []
+            missed = report.get("not_found") or []
+            if not found and not missed:
+                safe_notify("Nothing searched.", type="info")
+            else:
+                msg = f"Email search: found {len(found)}"
+                if missed:
+                    msg += f", none for {len(missed)} ({', '.join(missed)})"
+                safe_notify(
+                    msg,
+                    type=("warning" if missed else "positive"),
+                    timeout=4000,
+                )
+            try:
+                refresh_list_fn()
+            except RuntimeError:
+                pass
+        find_btn.on("click", lambda _: do_find_emails())
     else:
         # Stage 3 never ran, OR ran and found nothing, OR needs research first.
         with ui.row().style("align-items: center; gap: 10px; flex-wrap: wrap;"):

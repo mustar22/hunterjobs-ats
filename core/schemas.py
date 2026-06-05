@@ -36,6 +36,16 @@ class CompanyResearch(BaseModel):
     company_size: Literal["tiny", "mid", "enterprise"] = "tiny"
 
 
+class WebContact(BaseModel):
+    name: str = ""
+    title: str = ""
+
+
+class WebContacts(BaseModel):
+    """Stage 3 web-snippet extraction: real people named in search results only."""
+    contacts: list[WebContact] = Field(default_factory=list)
+
+
 class ContactFind(BaseModel):
     name: str = "Founder"
     title: str = "Founder"
