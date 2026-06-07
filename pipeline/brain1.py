@@ -419,6 +419,23 @@ def _merge_contacts(groups: list[list[dict]]) -> list[dict]:
     return out
 
 
+def _clean_company_name(company: str) -> str:
+    """Reduce a raw company field to a bare org name for slugifying/search:
+    drop parentheticals ("(YC S18, non-profit)"), any trailing descriptor after
+    a comma or dash, and common legal suffixes (Inc/Ltd/LLC/...). Returns '' when
+    nothing usable remains. So "Enveritas (YC S18, non-profit)" -> "Enveritas"."""
+    s = (company or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"[\(\[\{].*?[\)\]\}]", " ", s)              # strip parentheticals
+    s = re.split(r"\s[-–—]\s|,", s)[0]                       # drop trailing descriptor
+    s = re.sub(                                             # strip legal suffixes
+        r"\b(inc|llc|l\.l\.c|ltd|limited|corp|corporation|co|gmbh|plc|llp|pty|ag)\b\.?",
+        " ", s, flags=re.I,
+    )
+    return re.sub(r"\s+", " ", s).strip(" .,&-")
+
+
 def github_contacts(company: str, github_pat: str, domain: str = "",
                     limit: int = 5) -> list[dict]:
     """Resolve the company to a GitHub ORG, then return its PUBLIC members as
@@ -430,7 +447,11 @@ def github_contacts(company: str, github_pat: str, domain: str = "",
     No user-search fallback — empty-but-honest beats unrelated strangers. Real
     data only; every request is contained → empty list on any failure.
     """
-    if not github_pat or not company:
+    if not github_pat:
+        return []
+    # Company name only, never the job title; '' after cleaning = skip, don't guess.
+    company = _clean_company_name(company)
+    if not company:
         return []
     from urllib.parse import quote
 
@@ -439,11 +460,12 @@ def github_contacts(company: str, github_pat: str, domain: str = "",
         "Accept": "application/vnd.github.v3+json",
     }
 
-    def _get(url):
+    def _get(url, quiet_404=False):
         try:
             r = requests.get(url, headers=headers, timeout=5)
             if r.status_code != 200:
-                log.warning(f"[stage3] github {r.status_code} for {url}")
+                if not (quiet_404 and r.status_code == 404):
+                    log.warning(f"[stage3] github {r.status_code} for {url}")
                 return None
             return r.json()
         except Exception as e:
@@ -464,7 +486,7 @@ def github_contacts(company: str, github_pat: str, domain: str = "",
     confirmed: list[str] = []
     seen_login: set[str] = set()
     for slug in candidates:
-        org = _get(f"https://api.github.com/orgs/{slug}")
+        org = _get(f"https://api.github.com/orgs/{slug}", quiet_404=True)
         if org and org.get("login") and org["login"].lower() not in seen_login:
             seen_login.add(org["login"].lower())
             confirmed.append(org["login"])

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 
 from core import database
 from core.database import get_db_connection
@@ -27,6 +28,8 @@ log = logging.getLogger(__name__)
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIM = 768
+# Per-retry backoff (seconds) for free-tier 429s.
+_EMBED_RETRY_DELAYS = (1, 2, 4)
 
 
 # ── keys (same path as the brains) ──────────────────────────────────────────────
@@ -43,20 +46,32 @@ def embed_texts(texts: list[str]) -> list[list[float] | None]:
     """Embed a batch with gemini-embedding-001 at 768 dims; None per slot on failure, never raises."""
     if not texts:
         return []
-    try:
-        from google import genai
-        from google.genai import types
+    for attempt in range(len(_EMBED_RETRY_DELAYS) + 1):
+        try:
+            from google import genai
+            from google.genai import types
 
-        client = genai.Client(api_key=load_keys()["google"])
-        resp = client.models.embed_content(
-            model=EMBED_MODEL,
-            contents=texts,
-            config=types.EmbedContentConfig(output_dimensionality=EMBED_DIM),
-        )
-        return [list(e.values) for e in resp.embeddings]
-    except Exception as e:
-        log.warning("Embedding batch of %d failed: %s", len(texts), e)
-        return [None] * len(texts)
+            client = genai.Client(api_key=load_keys()["google"])
+            resp = client.models.embed_content(
+                model=EMBED_MODEL,
+                contents=texts,
+                config=types.EmbedContentConfig(output_dimensionality=EMBED_DIM),
+            )
+            return [list(e.values) for e in resp.embeddings]
+        except Exception as e:
+            msg = str(e)
+            rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg.upper() \
+                or "rate limit" in msg.lower()
+            if rate_limited and attempt < len(_EMBED_RETRY_DELAYS):
+                time.sleep(_EMBED_RETRY_DELAYS[attempt])
+                continue
+            if rate_limited:
+                log.warning("Embedding rate-limited (free-tier 429); skipped batch "
+                            "of %d after %d retries.", len(texts), len(_EMBED_RETRY_DELAYS))
+            else:
+                log.warning("Embedding batch of %d failed: %s", len(texts), e)
+            return [None] * len(texts)
+    return [None] * len(texts)
 
 
 def embed_text(text: str) -> list[float] | None:
