@@ -838,6 +838,11 @@ def render_setup_tab():
                                    value=cfg.get("yc_max_team_size", 50),
                                    step=10, min=1, max=500)\
                 .props("outlined dense").style("width: 160px;")
+            # YC-only freshness window; the global "Max hours old" stays LinkedIn/HN.
+            yc_ho_in = ui.number(label="YC max hours old",
+                                 value=cfg.get("yc_hours_old", 720),
+                                 step=24, min=24, max=2160)\
+                .props("outlined dense").style("width: 160px;")
             # Hacker News "Who is hiring?" — single monthly thread, free APIs.
             hn_cb = ui.checkbox("Hacker News (Who is hiring?)",
                                 value=bool(cfg.get("use_hn")))
@@ -1026,6 +1031,7 @@ def render_setup_tab():
                 "use_yc": bool(yc_cb.value),
                 "yc_remote_only": bool(yc_remote_cb.value),
                 "yc_max_team_size": int(yc_team_in.value or 50),
+                "yc_hours_old": int(yc_ho_in.value or 720),
                 "use_hn": bool(hn_cb.value),
                 "hn_remote_only": bool(hn_remote_cb.value),
                 "theme": theme_select.value,

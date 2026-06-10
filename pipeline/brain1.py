@@ -165,9 +165,9 @@ def description_hash(text: str) -> str:
 
 
 def hard_reject_check(text: str, rejects: list[str]) -> str | None:
-    lower = text.lower()
+    # Whole-token match; re.escape guards regex-special keywords (TS/SCI, W-2).
     for kw in rejects:
-        if kw.lower() in lower:
+        if re.search(r"\b" + re.escape(kw) + r"\b", text, re.IGNORECASE):
             return kw
     return None
 
@@ -1107,7 +1107,8 @@ def _parse_yc_date(s: str):
 
 
 def apply_yc_date_filter(rows: list[dict], hours_old: int,
-                         now: datetime | None = None) -> list[dict]:
+                         now: datetime | None = None,
+                         return_stats: bool = False):
     """Keep only YC rows whose date_posted falls within the last `hours_old`
     hours — the freshness window JobSpy enforces server-side but YC has no param
     for, so stale 2024/2025 listings would otherwise leak in.
@@ -1117,17 +1118,25 @@ def apply_yc_date_filter(rows: list[dict], hours_old: int,
     at day granularity (erring toward inclusion at the boundary). Undated or
     unparseable rows are DROPPED, not kept: we can't confirm they're fresh, and
     silently treating them as fresh is exactly the stale-leak bug. hours_old<=0
-    disables the filter (keep all)."""
+    disables the filter (keep all).
+
+    return_stats=True returns (kept, stale_count, undated_count) for diagnostics;
+    default returns just the kept list (unchanged behavior)."""
     if not hours_old or hours_old <= 0:
-        return rows
+        return (rows, 0, 0) if return_stats else rows
     now = now or datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(hours=hours_old)).date()
     kept = []
+    stale = undated = 0  # diagnostic split of the dropped rows; does not affect kept
     for r in rows:
         d = _parse_yc_date(str(r.get("date_posted") or ""))
         if d is not None and d >= cutoff_date:
             kept.append(r)
-    return kept
+        elif d is None:
+            undated += 1
+        else:
+            stale += 1
+    return (kept, stale, undated) if return_stats else kept
 
 
 def safe_scrape_yc(cfg: dict):
@@ -1184,6 +1193,7 @@ def run_brain1() -> None:
     use_hn = bool(cfg.get("use_hn"))
     results_wanted = int(cfg.get("results_wanted", 100))
     hours_old = int(cfg.get("hours_old", 72))
+    yc_hours_old = int(cfg.get("yc_hours_old", 720))
     github_pat = keys.get("github", "")
 
     # Two separate clients allow Stage 1 (filter, high volume) and Stage 2/3
@@ -1375,13 +1385,13 @@ def run_brain1() -> None:
                     f"[stage1] YC remote filter: dropped {before - len(yc_rows)} "
                     f"non-remote, kept {len(yc_rows)}"
                 )
-            # YC bypasses JobSpy's server-side hours_old, so apply the same
-            # freshness window here before Stage 1 (stale jobs never hit Gemma).
-            before = len(yc_rows)
-            yc_rows = apply_yc_date_filter(yc_rows, hours_old)
+            # YC gets its own wider window: WaaS listings stay up for months,
+            # so the global hours_old (tuned for fast sources) would drop nearly all.
+            yc_rows, _stale, _undated = apply_yc_date_filter(
+                yc_rows, yc_hours_old, return_stats=True)
             log.info(
-                f"[stage1] YC date filter (<= {hours_old}h): dropped "
-                f"{before - len(yc_rows)} stale/undated, kept {len(yc_rows)}"
+                f"[stage1] YC date filter (<= {yc_hours_old}h): kept "
+                f"{len(yc_rows)}, dropped {_stale} stale, {_undated} undated"
             )
             for row in yc_rows:
                 if not _process_row(row, "(YC)"):

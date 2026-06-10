@@ -34,6 +34,7 @@ DEFAULT_CONFIG = {
     "yc_max_team_size": 50,
     "yc_years_back": 3,
     "yc_remote_only": True,
+    "yc_hours_old": 720,  # YC/WaaS listings stay up for months; global hours_old is too tight
     # Hacker News "Who is hiring?" — single monthly thread, scraped via free APIs.
     "use_hn": False,
     "hn_remote_only": True,
