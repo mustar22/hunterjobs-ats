@@ -99,10 +99,10 @@ Both Brains talk to a local SQLite database (WAL mode + FTS5 for full-text searc
 HunterJobs pulls from four sources, mix-and-match in the Setup tab &mdash; each tagged with a colored badge in the job list so you can see at a glance where a listing came from (LinkedIn blue, Indeed navy, YC red-orange, HN orange-yellow):
 
 - **LinkedIn** and **Indeed** &mdash; via [python-jobspy](https://github.com/cullenwatson/JobSpy), term-based search against your search terms.
-- **Y Combinator startups** *(v0.3)* &mdash; powered by my companion package [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper). It pulls currently-hiring YC companies from the public [yc-oss](https://github.com/yc-oss/api) dataset, filters them down to small early-stage startups (configurable team-size cap), and scrapes jobs straight from each company's ATS board (Greenhouse / Lever / Ashby) &mdash; full descriptions, no auth. These are the kinds of roles that rarely make it to LinkedIn.
+- **Y Combinator startups** *(v0.3)* &mdash; powered by my companion package [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper). It pulls currently-hiring YC companies from the public [yc-oss](https://github.com/yc-oss/api) dataset, filters them down to small early-stage startups (configurable team-size cap), and scrapes jobs straight from each company's ATS board (Greenhouse / Lever / Ashby), falling back to the Work-at-a-Startup postings on the company's public YC profile page when there's no discoverable ATS &mdash; **~100% of hiring companies covered**, no auth. These are the kinds of roles that rarely make it to LinkedIn.
 - **Hacker News "Who is Hiring?"** *(new in v0.4.3)* &mdash; finds the newest monthly thread via the free HN Algolia + Firebase APIs (no auth) and parses each top-level comment into a job. Regex pulls the easy fields; the raw comment becomes the description Stage 1 judges.
 
-YC and HN jobs can be filtered to **remote-only** before they ever reach Stage 1, and both respect the same freshness window, so stale or non-remote listings don't burn LLM calls. You can run any combination of sources, including YC or HN on their own.
+YC and HN jobs can be filtered to **remote-only** before they ever reach Stage 1, so non-remote listings don't burn LLM calls. Freshness is windowed too: HN shares the global "Max hours old", while YC gets its own wider window (`yc_hours_old`, default 720h / 30 days) &mdash; YC startups leave postings up for months, so the tight job-board window would discard most of them. You can run any combination of sources, including YC or HN on their own.
 
 ### Similar past applications (RAG)
 
@@ -160,7 +160,7 @@ You only need a `GOOGLE_API_KEY` to start &mdash; get one free at https://aistud
 Open the **Setup** tab and:
 
 1. Paste your profile into the **Profile** textarea. Be specific. Stack, years of experience, salary floor, location constraints, hard nos. The richer this is, the better Stage 1 filters.
-2. Pick your **sources** &mdash; LinkedIn, Indeed, Y Combinator startups, and/or Hacker News "Who is Hiring?". For YC you can set a max team size (to target small startups); YC and HN each have a remote-only toggle.
+2. Pick your **sources** &mdash; LinkedIn, Indeed, Y Combinator startups, and/or Hacker News "Who is Hiring?". For YC you can set a max team size (to target small startups) and a YC-specific freshness window ("YC max hours old", default 720); YC and HN each have a remote-only toggle. The global "Max hours old" governs LinkedIn/Indeed/HN only.
 3. Edit **Search Terms** &mdash; one per line. These get passed to JobSpy as LinkedIn/Indeed queries. (YC scrapes whole companies, so Stage 1's LLM does the matching there.)
 4. Edit the **Hard Rejects** keyword list. Anything matched here gets auto-BAD without burning an LLM call. Default list catches the obvious staffing/recruiting/US-only stuff. You can export/import this as a `.txt` to share with others.
 5. Pick your backends. Brain 1's Stage 1 and Stages 2/3 are set separately; on Gemma, each stage gets its own model picker. Defaults are sensible &mdash; Gemma 4 for Brain 1, Gemini Flash for Brain 2.
@@ -183,7 +183,7 @@ Your `keys.py` is gitignored. Don't commit it.
 ## Known limitations
 
 - **JobSpy can be flaky** &mdash; LinkedIn occasionally rate-limits, and JobSpy 1.1.82 has a bug where it mis-parses some listings' locations into an invalid-country error that aborts the whole scrape. HunterJobs patches around that at runtime (see the comment block in `pipeline/brain1.py`), but a search term can still occasionally produce nothing on a given day.
-- **YC ATS coverage is partial** &mdash; the YC source resolves a company's ATS by matching its slug and checking its website for a board link. Companies on unsupported ATSs (Workday, Rippling) or with JavaScript-only boards are missed. Coverage skews toward companies using Greenhouse / Lever / Ashby.
+- **YC dates are approximate for WaaS-fallback jobs** &mdash; companies without a discoverable ATS board are covered via their public YC profile page, but those postings only expose rounded relative ages ("5 months"), so `date_posted` there is a conservative estimate, not exact.
 - **LinkedIn doesn't always return a posting date or location** &mdash; some rows show blank for those. That's upstream data, not a bug.
 - **Stage 2/3 fail more often than I'd like** &mdash; Gemma 4 sometimes returns malformed JSON or just times out. There are manual retry buttons inside each job's expansion for both.
 - **Local models < 20B params chat poorly with tools.** They'll echo the tool result back into their text. Snapshot generation with local models is fine; chat works best with Gemini or Claude.
