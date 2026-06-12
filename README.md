@@ -132,12 +132,17 @@ You can mix and match. Brain 1's stages take separate backends &mdash; Stage 1 (
 ```bash
 git clone https://github.com/mustar22/hunterjobs-ats.git
 cd hunterjobs-ats
-pip install -e .            # installs deps and puts core/pipeline/ui on the path
-cp keys_dummy.py keys.py    # then edit keys.py and add your API key(s)
+python scripts/setup.py     # installs everything; see below
 ```
 
-(`pip install -e .` reads its dependencies from `requirements.txt`; a plain
-`pip install -r requirements.txt` also works if you just want the deps.)
+`scripts/setup.py` is the canonical setup: it installs HunterJobs (editable, deps
+from `requirements.txt`), clones the companion [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper)
+into a sibling directory and editable-installs it, verifies the scraper imports
+from local source, and seeds `config.json` / `keys.py` (then edit `keys.py` and
+add your API key(s)). Idempotent — re-run it anytime to pull scraper updates.
+
+> A bare `pip install -e .` does **not** install the YC scraper — the YC source
+> will be skipped until you run `scripts/setup.py`.
 
 Then launch with whichever is easier:
 
