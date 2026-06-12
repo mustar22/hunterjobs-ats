@@ -1152,8 +1152,10 @@ def safe_scrape_yc(cfg: dict):
         # keyword=None on purpose: YC's keyword is a crude single-substring title
         # filter; Stage 1's LLM does the real filtering on the description instead.
         jobs = scrape_yc_jobs(
-            max_companies=int(cfg.get("yc_max_companies", 100)),
-            max_team_size=int(cfg.get("yc_max_team_size", 50)),
+            # 0 = uncapped
+            max_companies=int(cfg.get("yc_max_companies", 100)) or None,
+            max_team_size=int(cfg.get("yc_max_team_size", 50)) or None,
+            waas_descriptions=True,
             years_back=int(cfg.get("yc_years_back", 3)),
             keyword=None,
         )
@@ -1194,6 +1196,7 @@ def run_brain1() -> None:
     results_wanted = int(cfg.get("results_wanted", 100))
     hours_old = int(cfg.get("hours_old", 72))
     yc_hours_old = int(cfg.get("yc_hours_old", 720))
+    use_rag = bool(cfg.get("use_rag", True))
     github_pat = keys.get("github", "")
 
     # Two separate clients allow Stage 1 (filter, high volume) and Stage 2/3
@@ -1250,7 +1253,8 @@ def run_brain1() -> None:
 
     threading.Thread(target=_watchdog, daemon=True, name="brain1-watchdog").start()
 
-    counts = {"scraped": 0, "good": 0, "maybe": 0, "bad": 0, "hard_rej": 0}
+    counts = {"scraped": 0, "good": 0, "maybe": 0, "bad": 0, "hard_rej": 0,
+              "no_desc": 0}
 
     good_jobs: list[dict] = []
     # Cross-source dedup by job_url (LinkedIn/Indeed/YC can overlap within a run).
@@ -1274,6 +1278,9 @@ def run_brain1() -> None:
         job_id = str(row.get("id") or fallback_job_id(row))
         desc = str(row.get("description") or "")
         if not desc or len(desc) < 100:
+            counts["no_desc"] += 1
+            log.info(f"[stage1] skip (no/short description) "
+                     f"{row.get('title')} @ {row.get('company')}")
             return True
         url = str(row.get("job_url") or "")
         if url and url in seen_urls:
@@ -1325,7 +1332,8 @@ def run_brain1() -> None:
             insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
             log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
             # Best-effort embed-on-scrape for RAG; a failed embed must never fail the scrape.
-            embeddings.embed_and_store(conn, job)
+            if use_rag:
+                embeddings.embed_and_store(conn, job)
             if g1.verdict == "GOOD":
                 counts["good"] += 1
                 job["verdict"] = "GOOD"  # stage 2 reads this
@@ -1531,7 +1539,8 @@ def run_brain1() -> None:
         log.info(
             f"Brain 1 complete | scraped={counts['scraped']} "
             f"good={counts['good']} maybe={counts['maybe']} "
-            f"bad={counts['bad']} hard_rej={counts['hard_rej']}"
+            f"bad={counts['bad']} hard_rej={counts['hard_rej']} "
+            f"no_desc={counts['no_desc']}"
         )
         log.info("=" * 60)
 

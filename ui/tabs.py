@@ -834,11 +834,14 @@ def render_setup_tab():
             yc_cb = ui.checkbox("Y Combinator startups", value=bool(cfg.get("use_yc")))
             yc_remote_cb = ui.checkbox("YC remote only",
                                        value=bool(cfg.get("yc_remote_only", True)))
-            yc_team_in = ui.number(label="YC max team size",
+            yc_team_in = ui.number(label="YC max team size (0 = any)",
                                    value=cfg.get("yc_max_team_size", 50),
-                                   step=10, min=1, max=500)\
-                .props("outlined dense").style("width: 160px;")
-            # YC-only freshness window; the global "Max hours old" stays LinkedIn/HN.
+                                   step=10, min=0, max=1000)\
+                .props("outlined dense").style("width: 180px;")
+            yc_comp_in = ui.number(label="YC max companies (0 = all)",
+                                   value=cfg.get("yc_max_companies", 100),
+                                   step=50, min=0, max=2000)\
+                .props("outlined dense").style("width: 190px;")
             yc_ho_in = ui.number(label="YC max hours old",
                                  value=cfg.get("yc_hours_old", 720),
                                  step=24, min=24, max=2160)\
@@ -1030,7 +1033,8 @@ def render_setup_tab():
                 **cfg,
                 "use_yc": bool(yc_cb.value),
                 "yc_remote_only": bool(yc_remote_cb.value),
-                "yc_max_team_size": int(yc_team_in.value or 50),
+                "yc_max_team_size": int(yc_team_in.value or 0),
+                "yc_max_companies": int(yc_comp_in.value or 0),
                 "yc_hours_old": int(yc_ho_in.value or 720),
                 "use_hn": bool(hn_cb.value),
                 "hn_remote_only": bool(hn_remote_cb.value),
@@ -1041,6 +1045,7 @@ def render_setup_tab():
                 "salary_floor": int(floor_in.value or 0),
                 "results_wanted": int(rw_in.value or 100),
                 "hours_old": int(ho_in.value or 72),
+                "use_rag": bool(rag_cb.value),
                 # Save the actual ticked list — an empty list is allowed (YC-only run).
                 # Do NOT coerce back to ["linkedin"]; that silently forces LinkedIn on.
                 "sources": sources,
@@ -1078,6 +1083,8 @@ def render_setup_tab():
             'embedded automatically during a scan; use this to embed jobs that '
             'predate the feature. Idempotent — already-embedded jobs are skipped.</div>'
         )
+        rag_cb = ui.checkbox("Enable RAG (embeddings + similar past applications)",
+                             value=bool(cfg.get("use_rag", True)))
         if not database.RAG_AVAILABLE:
             ui.html(
                 '<div style="font-size: 12px; color: var(--maybe);">'
@@ -1098,6 +1105,9 @@ def render_setup_tab():
 
             async def do_backfill():
                 if _bf["running"]:
+                    return
+                if not rag_cb.value:
+                    backfill_status.set_text("RAG is disabled — enable the toggle first.")
                     return
                 _bf["running"] = True
                 _bf["done"], _bf["total"] = 0, 0

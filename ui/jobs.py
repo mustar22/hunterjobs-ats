@@ -13,6 +13,7 @@ import json
 from nicegui import ui
 
 from core import database  # for live RAG_AVAILABLE flag
+from core.config import load_config
 from core.database import get_db_connection
 import core.embeddings as embeddings  # RAG: similar past applications
 import core.runner_status as runner_status
@@ -477,6 +478,9 @@ def render_similar_applications(row: dict):
 
     if not database.RAG_AVAILABLE:
         _quiet()
+        return
+    if not load_config().get("use_rag", True):
+        _quiet("RAG is disabled in Setup.")
         return
 
     conn = get_db_connection()

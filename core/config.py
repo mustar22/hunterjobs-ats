@@ -30,8 +30,8 @@ DEFAULT_CONFIG = {
     "sources": ["linkedin"],
     # YC startups are company-based, scraped separately from JobSpy sites.
     "use_yc": False,
-    "yc_max_companies": 100,
-    "yc_max_team_size": 50,
+    "yc_max_companies": 100,  # 0 = all hiring companies
+    "yc_max_team_size": 50,  # 0 = no cap
     "yc_years_back": 3,
     "yc_remote_only": True,
     "yc_hours_old": 720,  # YC/WaaS listings stay up for months; global hours_old is too tight
@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "hn_max_jobs": 200,
     "results_wanted": 100,
     "hours_old": 72,
+    "use_rag": True,  # off = no embedding calls, no similar-applications panel
     "brain1_backend": "gemma",
     "brain1_stage1_backend": "gemma",
     "brain1_stage23_backend": "gemma",
