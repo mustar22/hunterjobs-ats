@@ -680,6 +680,16 @@ def render_setup_tab():
         profile_ta = ui.textarea(value=cfg["profile"]).props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
+        ui.html('<div class="section-title">Geo-Eligibility</div>')
+        ui.html(
+            '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
+            'Where you can legally work. Leave empty to skip geo filtering entirely. '
+            'Format: base country, passport, work authorization, sponsorship/relocation '
+            'stance, remote scope, timezone.</div>'
+        )
+        geo_ta = ui.textarea(value=cfg.get("geo_eligibility", "")).props("outlined autogrow")\
+            .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
+
         ui.html('<div class="section-title">Search Terms</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
@@ -1040,6 +1050,7 @@ def render_setup_tab():
                 "hn_remote_only": bool(hn_remote_cb.value),
                 "theme": theme_select.value,
                 "profile": profile_ta.value,
+                "geo_eligibility": geo_ta.value,
                 "search_terms": terms_ta.value,
                 "hard_rejects": rejects_ta.value,
                 "salary_floor": int(floor_in.value or 0),

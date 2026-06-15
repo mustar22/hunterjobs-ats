@@ -24,6 +24,10 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1"
 DEFAULT_CONFIG = {
     "theme": "dark",
     "profile": "",
+    # Stage 1 geo-eligibility. Empty = no geo filtering (no assumptions). Format:
+    # base country, passport, work authorization, sponsorship/relocation stance,
+    # remote scope, timezone.
+    "geo_eligibility": "",
     "search_terms": "machine learning engineer remote\ngenerative AI engineer remote",
     "hard_rejects": "US citizenship required\nW2 only\nsecurity clearance",
     "salary_floor": 4500,

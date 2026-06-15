@@ -799,7 +799,9 @@ def call_gemma(
 
 
 # ── Gemma #1 / #2 / #3 ────────────────────────────────────────────────────────
-def gemma1_filter(client, model, backend, description: str, profile: str) -> JobFilter:
+def gemma1_filter(client, model, backend, description: str, profile: str,
+                  location: str = "", is_remote=None, source: str = "",
+                  geo_eligibility: str = "") -> JobFilter:
     system = (
         "You are a strict job filter. Evaluate this listing against the candidate "
         "profile below. Return GOOD if it's a strong match, MAYBE if uncertain but "
@@ -807,7 +809,21 @@ def gemma1_filter(client, model, backend, description: str, profile: str) -> Job
         "(under 15 words). For GOOD/MAYBE, leave reject_reason empty.\n\n"
         f"CANDIDATE PROFILE:\n{profile or '(no profile provided)'}"
     )
-    prompt = f"Job listing:\n\n{description[:6000]}"
+    # Geo rule is a no-op unless the candidate has declared eligibility constraints.
+    if (geo_eligibility or "").strip():
+        system += (
+            f"\n\nCANDIDATE GEO-ELIGIBILITY:\n{geo_eligibility.strip()}\n\n"
+            "GEO RULE: Given the candidate's geo-eligibility above, if the role is "
+            "region-locked, requires work authorization/sponsorship/relocation the "
+            "candidate lacks, or is 'remote' only within a region the candidate cannot "
+            "legally work in, return BAD with reject_reason prefixed 'geo: '. Treat "
+            "'remote' as ambiguous — count it eligible only if remote-global or within "
+            "a region the candidate can work."
+        )
+    remote_str = {True: "true", False: "false"}.get(is_remote, "unknown")
+    meta = (f"Location: {location or 'unspecified'} | "
+            f"Remote: {remote_str} | Source: {source or 'unspecified'}")
+    prompt = f"Job listing:\n{meta}\n\n{description[:6000]}"
     return call_gemma(client, model, backend, system, prompt, JobFilter, stage="stage1")
 
 
@@ -1206,6 +1222,7 @@ def run_brain1() -> None:
     cfg = load_config()
     keys = load_keys()
     profile_text = cfg.get("profile", "")
+    geo_text = cfg.get("geo_eligibility", "")
 
     search_terms = [
         t.strip() for t in cfg.get("search_terms", "").splitlines() if t.strip()
@@ -1351,7 +1368,9 @@ def run_brain1() -> None:
             stage1=f"filter {counts['scraped']} {progress_label}",
         )
         try:
-            g1 = gemma1_filter(s1_client, s1_model, s1_backend, desc, profile_text)
+            g1 = gemma1_filter(s1_client, s1_model, s1_backend, desc, profile_text,
+                               location=job["location"], is_remote=row.get("is_remote"),
+                               source=job["source"], geo_eligibility=geo_text)
             insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
             log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
             # Best-effort embed-on-scrape for RAG; a failed embed must never fail the scrape.

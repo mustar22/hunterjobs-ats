@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.4.3-9d6fff" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.4.5-9d6fff" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
   <img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-orange" />
   <img alt="tests" src="https://github.com/mustar22/hunterjobs-ats/actions/workflows/test.yml/badge.svg" />
@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <sub><strong>v0.4.3 just shipped</strong> &mdash; Hacker News "Who is Hiring?" source, real contact discovery (no more guessed names), OpenRouter backend. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
+  <sub><strong>v0.4.5 just shipped</strong> &mdash; geo-eligibility filtering, ~100% YC (WaaS) coverage, and Stage 3 contact-quality fixes (no more stranger emails). <a href="#changelog--roadmap">See changelog &darr;</a></sub>
 </p>
 
 ---
@@ -197,6 +197,14 @@ Your `keys.py` is gitignored. Don't commit it.
 ---
 
 ## Changelog & Roadmap
+
+### v0.4.5 — shipped
+
+- **Geo-eligibility filtering** &mdash; a Setup field for where you can legally work (base country, passport, work authorization, sponsorship/relocation stance, remote scope, timezone). Stage 1 now sees each role's structured location, remote-status and source, and rejects region-locked / sponsorship-dependent / wrong-region-"remote" roles with a `geo:` reason. Empty field = no geo filtering, no assumptions
+- **~100% YC coverage via Work at a Startup** &mdash; WaaS jobs are now scored through the same pipeline, with uncapped company / team-size limits and a YC-specific freshness window (`yc_hours_old`, since WaaS listings stay up for months)
+- **RAG on/off toggle** &mdash; turn embeddings + the similar-applications panel off entirely (no embedding calls)
+- **Canonical setup script** &mdash; `python scripts/setup.py` does the editable HJ install, clones/editable-installs the YC scraper, and seeds config (a bare `pip install -e .` doesn't pull the scraper)
+- Stage 3 contact-quality fixes: capped LLM output tokens + a degenerate/implausible-name guard; **removed the unverified GitHub `type:org` fallback** that surfaced unrelated developers' personal emails as "verified" (now exact-org lookups only, and a member's email is kept only if it's on the company domain); **ATS/apply hosts now rejected in `clean_domain`** (greenhouse/lever/ashby/etc.) so email permutations stop using shortener domains, preferring the real company website over the apply URL
 
 ### v0.4.3 — shipped
 
