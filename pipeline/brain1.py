@@ -349,6 +349,14 @@ def scrape_team_contacts(domain: str, company: str = "", timeout: int = 5,
 DDGS_BACKEND = "duckduckgo, brave, baidu, mojeek"
 
 
+def _plausible_name(nm: str) -> bool:
+    """Reject LLM-degenerate output (over-long or a token/phrase looped)."""
+    if len(nm) > 100:
+        return False
+    toks = nm.split()
+    return not (len(toks) >= 6 and len(set(t.lower() for t in toks)) <= len(toks) // 2)
+
+
 def web_search_contacts(company: str, domain: str,
                         client=None, model=None, backend=None) -> list[dict]:
     """ddgs search for the company's leadership, then let the stage-23 LLM extract
@@ -375,11 +383,11 @@ def web_search_contacts(company: str, domain: str,
         )
         prompt = f"Company: {company}\n\n=== SEARCH SNIPPETS ===\n{snippets}"
         result = call_gemma(client, model, backend, system, prompt,
-                            WebContacts, stage="stage3")
+                            WebContacts, stage="stage3", max_output_tokens=512)
         out = []
         for c in result.contacts:
             nm = (c.name or "").strip()
-            if nm:
+            if nm and _plausible_name(nm):
                 out.append({
                     "name": nm, "title": (c.title or "").strip(), "email": "",
                     "source": "web", "confidence": "reported",
@@ -687,7 +695,7 @@ def _run_with_timeout(fn, timeout_s: float):
 def call_gemma(
     client, model: str, backend: str,
     system: str, prompt: str, schema,
-    stage: str = "stage1",
+    stage: str = "stage1", max_output_tokens: int = 1024,
 ):
     # Rate-limit only the paid Gemma API; LM Studio is local and free.
     if backend == "gemma":
@@ -716,6 +724,7 @@ def call_gemma(
                             {"role": "user", "content": prompt},
                         ],
                         temperature=0.1,
+                        max_tokens=max_output_tokens,
                         response_format={
                             "type": "json_schema",
                             "json_schema": {
@@ -734,6 +743,7 @@ def call_gemma(
                 config = types.GenerateContentConfig(
                     system_instruction=system,
                     temperature=0.1,
+                    max_output_tokens=max_output_tokens,
                     response_mime_type="application/json",
                     response_schema=schema,
                 )
