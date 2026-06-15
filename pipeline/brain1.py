@@ -574,11 +574,16 @@ def clean_domain(domain: str) -> str:
     # Strip www./uk./es./etc subdomain
     if d.startswith("www."):
         d = d[4:]
-    # Drop entirely if it's a job board or social platform — not the real company domain
+    # Drop job boards, socials, and ATS/apply hosts — not the real company domain
     bad_hosts = (
         "linkedin.com", "indeed.com", "glassdoor.com", "google.com",
         "ziprecruiter.com", "monster.com", "wellfound.com", "ycombinator.com",
         "facebook.com", "twitter.com", "x.com",
+        "grnh.se", "greenhouse.io", "lever.co", "ashbyhq.com",
+        "workable.com", "myworkdayjobs.com", "smartrecruiters.com",
+        "jobvite.com", "icims.com", "breezy.hr", "recruitee.com",
+        "applytojob.com", "teamtailor.com", "bamboohr.com",
+        "workatastartup.com",
     )
     if any(d.endswith(host) for host in bad_hosts):
         return ""
@@ -586,6 +591,16 @@ def clean_domain(domain: str) -> str:
     if "." not in d:
         return ""
     return d
+
+
+def _company_domain(row: dict) -> str:
+    """Pick the first scraped URL that resolves to a real company domain,
+    preferring the direct site over an ATS/board apply link. '' → no perm emails."""
+    for c in (row.get("company_url_direct"), row.get("company_url")):
+        c = str(c or "")
+        if c and clean_domain(c):
+            return c
+    return ""
 
 
 # ── rate limiter ──────────────────────────────────────────────────────────────
@@ -1304,7 +1319,7 @@ def run_brain1() -> None:
             "id": job_id,
             "title": str(row.get("title") or ""),
             "company": str(row.get("company") or ""),
-            "domain": str(row.get("company_url_direct") or row.get("company_url") or ""),
+            "domain": _company_domain(row),
             "location": str(row.get("location") or ""),
             "job_type": str(row.get("job_type") or ""),
             "salary_min": row.get("min_amount"),
