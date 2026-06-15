@@ -345,6 +345,10 @@ def scrape_team_contacts(domain: str, company: str = "", timeout: int = 5,
 
 
 # ── contact OSINT: web search (ddgs) → LLM snippet parse ──────────────────────
+# ddgs search engines; Yandex excluded (unreliable / frequent captchas).
+DDGS_BACKEND = "duckduckgo, brave, baidu, mojeek"
+
+
 def web_search_contacts(company: str, domain: str,
                         client=None, model=None, backend=None) -> list[dict]:
     """ddgs search for the company's leadership, then let the stage-23 LLM extract
@@ -354,7 +358,7 @@ def web_search_contacts(company: str, domain: str,
     try:
         from ddgs import DDGS
         query = f"{company} founder OR CEO OR CTO"
-        results = DDGS(timeout=8).text(query, max_results=5)  # new instance per call
+        results = DDGS(timeout=8).text(query, max_results=5, backend=DDGS_BACKEND)  # new instance per call
         snippets = "\n".join(
             f"{r.get('title', '')}: {r.get('body', '')}" for r in (results or [])
         ).strip()
@@ -1632,7 +1636,7 @@ def search_person_email(name: str, company: str, domain: str = "",
     try:
         from ddgs import DDGS
         query = f'"{name}" {company} email'.strip()
-        results = DDGS(timeout=timeout).text(query, max_results=5)
+        results = DDGS(timeout=timeout).text(query, max_results=5, backend=DDGS_BACKEND)
     except Exception as e:
         log.warning(f"[contacts] email search failed for {name} (skipping): {e}")
         return ""
