@@ -465,7 +465,6 @@ def github_contacts(company: str, github_pat: str, domain: str = "",
     company = _clean_company_name(company)
     if not company:
         return []
-    from urllib.parse import quote
 
     headers = {
         "Authorization": f"token {github_pat}",
@@ -495,6 +494,8 @@ def github_contacts(company: str, github_pat: str, domain: str = "",
         if s and s not in candidates:
             candidates.append(s)
 
+    # Exact org lookups only. No fuzzy name search: a name-match alone surfaces
+    # unrelated orgs and their members' personal emails as "company contacts".
     confirmed: list[str] = []
     seen_login: set[str] = set()
     for slug in candidates:
@@ -502,17 +503,6 @@ def github_contacts(company: str, github_pat: str, domain: str = "",
         if org and org.get("login") and org["login"].lower() not in seen_login:
             seen_login.add(org["login"].lower())
             confirmed.append(org["login"])
-
-    # type:org search catches orgs whose login differs from the slug.
-    sdata = _get(
-        f"https://api.github.com/search/users"
-        f"?q={quote(f'{company} type:org')}&per_page=3"
-    )
-    for it in (sdata or {}).get("items", []) or []:
-        login = it.get("login")
-        if login and login.lower() not in seen_login:
-            seen_login.add(login.lower())
-            confirmed.append(login)
 
     if not confirmed:
         log.info(f"[stage3] github: no org resolved for '{company}'")
@@ -532,8 +522,10 @@ def github_contacts(company: str, github_pat: str, domain: str = "",
             prof = _get(f"https://api.github.com/users/{mlogin}") or {}
             name = (prof.get("name") or "").strip()
             email = (prof.get("email") or "").strip()
-            if email and "noreply" in email.lower():
-                email = ""  # GitHub's privacy alias — useless for outreach
+            # Trust the email only if it's on the company domain; a personal
+            # gmail/hotmail (or GitHub's noreply alias) proves no affiliation.
+            if email and not (cdomain and email.lower().endswith("@" + cdomain)):
+                email = ""
             if not name and not email:
                 continue  # anonymous handle, nothing usable
             contacts.append({
@@ -886,16 +878,18 @@ def find_contacts(company: str, domain: str, github_pat: str,
     Each contact: {name, title, email, source, confidence}.
     """
     team = scrape_team_contacts(domain, company)
+    cdomain = clean_domain(domain)
     gh = [{
         "name": g.get("name") or "", "title": g.get("title") or "",
         "email": g.get("email") or "",
         "source": "github",
-        "confidence": "verified" if g.get("email") else "reported",
+        # Only a company-domain email is "verified"; bare presence isn't enough.
+        "confidence": ("verified" if g.get("email") and cdomain
+                       and g["email"].lower().endswith("@" + cdomain) else "reported"),
     } for g in github_contacts(company, github_pat, domain)]
     web = web_search_contacts(company, domain, client, model, backend)
 
     perm = []
-    cdomain = clean_domain(domain)
     if cdomain:
         for local in ("founder", "hello"):
             perm.append({
