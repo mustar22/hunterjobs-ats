@@ -30,6 +30,10 @@ DEFAULT_CONFIG = {
     "geo_eligibility": "",
     "search_terms": "machine learning engineer remote\ngenerative AI engineer remote",
     "hard_rejects": "US citizenship required\nW2 only\nsecurity clearance",
+    # Agency-suspects the user dismissed as "not an agency" — kept out of suggestions.
+    "dismissed_suspects": [],
+    # Companies the user manually staged as suspects (alongside Stage 2 auto-flags).
+    "manual_suspects": [],
     "salary_floor": 4500,
     "sources": ["linkedin"],
     # YC startups are company-based, scraped separately from JobSpy sites.

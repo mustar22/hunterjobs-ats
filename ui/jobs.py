@@ -636,18 +636,21 @@ def render_contact_section(row: dict, refresh_list_fn):
                     btn.disable()
                 except RuntimeError:
                     pass
-                ok = await run_in_thread(brain1.find_contact_for_job, jid)
+                n = await run_in_thread(brain1.find_contact_for_job, jid)
                 try:
                     btn.enable()
                     btn.props(remove="loading")
                 except RuntimeError:
                     pass
-                if ok:
-                    safe_notify("Contact found.", type="positive")
+                if n is None:
+                    safe_notify("Contact hunt failed. Check logs.", type="negative")
+                else:
+                    if n > 0:
+                        safe_notify("Contact found.", type="positive")
+                    else:
+                        safe_notify("No contact found.", type="warning")
                     try:
                         refresh_list_fn()
                     except RuntimeError:
                         pass
-                else:
-                    safe_notify("Contact hunt failed. Check logs.", type="negative")
             btn.on("click", lambda _: do_contact())

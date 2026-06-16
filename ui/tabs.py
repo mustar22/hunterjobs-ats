@@ -9,6 +9,7 @@ tab) is anchored to the repo root.
 
 from __future__ import annotations
 
+import html
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,7 +25,7 @@ from pipeline import brain2_chat  # chat + clear history
 from pipeline.process_control import spawn_detached, kill_pid, _is_pid_alive
 
 from ui.helpers import status_dot_class, fmt_ts, safe_notify, run_in_thread
-from ui.db_queries import fetch_applied
+from ui.db_queries import fetch_applied, fetch_agency_suspects
 from ui.jobs import render_job_row
 
 
@@ -698,130 +699,305 @@ def render_setup_tab():
         terms_ta = ui.textarea(value=cfg["search_terms"]).props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
-        ui.html('<div class="section-title">Hard Reject Keywords</div>')
-        ui.html(
-            '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
-            'Substring match against title + company + description. Zero API cost. '
-            'Use Export/Import to share blacklists with others.</div>'
-        )
-        rejects_ta = ui.textarea(value=cfg["hard_rejects"]).props("outlined autogrow")\
-            .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
-
-        with ui.row().style("gap: 8px; margin-top: 8px;"):
-            def export_rejects():
-                lines = [l.strip() for l in (rejects_ta.value or "").splitlines() if l.strip()]
-                exported = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                content = (
-                    f"# HunterJobs blacklist\n"
-                    f"# Exported: {exported}\n"
-                    f"# Entries: {len(lines)}\n"
-                    f"# One keyword/phrase per line. Lines starting with # are comments.\n"
-                    f"#\n"
-                    + "\n".join(lines)
-                    + "\n"
+        ui.html('<div class="section-title">Blacklist &amp; Suspects</div>')
+        with ui.row().style("gap: 24px; width: 100%; align-items: stretch; "
+                            "flex-wrap: nowrap;"):
+            # ── Blacklist (active / manual) ─────────────────────────────────
+            with ui.column().style("flex: 1; min-width: 0; gap: 4px;"):
+                ui.html('<div style="font-weight: 600; font-size: 13px;">'
+                        'Blacklist <span style="color: var(--text-dim); '
+                        'font-weight: 400;">(active)</span></div>')
+                ui.html(
+                    '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
+                    'Substring match against title + company + description. Zero API cost. '
+                    'Use Export/Import to share blacklists with others.</div>'
                 )
-                ui.run_javascript(
-                    "const blob = new Blob([" + json.dumps(content) + "], "
-                    "{type: 'text/plain'});"
-                    "const url = URL.createObjectURL(blob);"
-                    "const a = document.createElement('a'); a.href = url;"
-                    "a.download = 'hunterjobs_blacklist.txt';"
-                    "a.click(); URL.revokeObjectURL(url);"
-                )
-                ui.notify(f"Exported {len(lines)} entries.", type="positive")
+                rejects_ta = ui.textarea(value=cfg["hard_rejects"]).props("outlined autogrow")\
+                    .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
-            ui.button("Export Blacklist", on_click=export_rejects).classes("btn-ghost")\
-                .style("font-size: 12px;")
-
-            def open_import():
-                with ui.dialog() as dialog, ui.card():
-                    ui.html('<div style="font-weight: 600;">Import Blacklist</div>')
-                    ui.html(
-                        '<div style="font-size: 12px; color: var(--text-dim); '
-                        'margin-bottom: 8px;">'
-                        'Upload a hunterjobs_blacklist.txt file (or any .txt with '
-                        'one keyword per line). Lines starting with # are ignored. '
-                        'Entries are merged with your current list (no duplicates).</div>'
-                    )
-
-                    def handle_upload(e):
-                        # NiceGUI's upload event shape varies across versions, so
-                        # probe each known attribute in turn.
-                        raw = None
-                        try:
-                            for attr in ("content", "file", "data"):
-                                obj = getattr(e, attr, None)
-                                if obj is None:
-                                    continue
-                                # obj could be file-like, bytes, or string
-                                if hasattr(obj, "read"):
-                                    try:
-                                        obj.seek(0)
-                                    except Exception:
-                                        pass
-                                    raw = obj.read()
-                                    break
-                                if isinstance(obj, (bytes, bytearray)):
-                                    raw = obj
-                                    break
-                                if isinstance(obj, str):
-                                    raw = obj
-                                    break
-                            # Last resort: check e.args (some versions)
-                            if raw is None and hasattr(e, "args"):
-                                args = e.args
-                                if isinstance(args, dict):
-                                    raw = args.get("content") or args.get("file") or args.get("data")
-                                else:
-                                    raw = args
-                            if raw is None:
-                                raise ValueError(
-                                    f"could not extract content from upload event "
-                                    f"(attrs: {[a for a in dir(e) if not a.startswith('_')]})"
-                                )
-                            if isinstance(raw, (bytes, bytearray)):
-                                raw = raw.decode("utf-8", errors="replace")
-                            if not raw or not raw.strip():
-                                raise ValueError("empty file")
-                        except Exception as ex:
-                            ui.notify(f"Bad file: {ex}", type="negative")
-                            return
-
-                        entries = [
-                            line.strip()
-                            for line in raw.splitlines()
-                            if line.strip() and not line.strip().startswith("#")
-                        ]
-                        current = {
-                            l.strip().lower(): l.strip()
-                            for l in (rejects_ta.value or "").splitlines()
-                            if l.strip()
-                        }
-                        added = 0
-                        for entry in entries:
-                            if entry.lower() not in current:
-                                current[entry.lower()] = entry
-                                added += 1
-                        rejects_ta.value = "\n".join(current.values())
-                        dialog.close()
-                        ui.notify(
-                            f"Imported {added} new entries "
-                            f"(of {len(entries)} in file).",
-                            type="positive",
+                with ui.row().style("gap: 8px; margin-top: 8px;"):
+                    def export_rejects():
+                        lines = [l.strip() for l in (rejects_ta.value or "").splitlines() if l.strip()]
+                        exported = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                        content = (
+                            f"# HunterJobs blacklist\n"
+                            f"# Exported: {exported}\n"
+                            f"# Entries: {len(lines)}\n"
+                            f"# One keyword/phrase per line. Lines starting with # are comments.\n"
+                            f"#\n"
+                            + "\n".join(lines)
+                            + "\n"
                         )
+                        ui.run_javascript(
+                            "const blob = new Blob([" + json.dumps(content) + "], "
+                            "{type: 'text/plain'});"
+                            "const url = URL.createObjectURL(blob);"
+                            "const a = document.createElement('a'); a.href = url;"
+                            "a.download = 'hunterjobs_blacklist.txt';"
+                            "a.click(); URL.revokeObjectURL(url);"
+                        )
+                        ui.notify(f"Exported {len(lines)} entries.", type="positive")
 
-                    ui.upload(
-                        label="Choose .txt file",
-                        on_upload=handle_upload,
-                        auto_upload=True,
-                    ).props("accept=.txt").style("width: 100%;")
+                    ui.button("Export Blacklist", on_click=export_rejects).classes("btn-ghost")\
+                        .style("font-size: 12px;")
 
-                    with ui.row().style("gap: 8px; margin-top: 8px;"):
-                        ui.button("Close", on_click=dialog.close).classes("btn-ghost")
-                dialog.open()
+                    def open_import():
+                        with ui.dialog() as dialog, ui.card():
+                            ui.html('<div style="font-weight: 600;">Import Blacklist</div>')
+                            ui.html(
+                                '<div style="font-size: 12px; color: var(--text-dim); '
+                                'margin-bottom: 8px;">'
+                                'Upload a hunterjobs_blacklist.txt file (or any .txt with '
+                                'one keyword per line). Lines starting with # are ignored. '
+                                'Entries are merged with your current list (no duplicates).</div>'
+                            )
 
-            ui.button("Import Blacklist", on_click=open_import).classes("btn-ghost")\
-                .style("font-size: 12px;")
+                            def handle_upload(e):
+                                # NiceGUI's upload event shape varies across versions, so
+                                # probe each known attribute in turn.
+                                raw = None
+                                try:
+                                    for attr in ("content", "file", "data"):
+                                        obj = getattr(e, attr, None)
+                                        if obj is None:
+                                            continue
+                                        # obj could be file-like, bytes, or string
+                                        if hasattr(obj, "read"):
+                                            try:
+                                                obj.seek(0)
+                                            except Exception:
+                                                pass
+                                            raw = obj.read()
+                                            break
+                                        if isinstance(obj, (bytes, bytearray)):
+                                            raw = obj
+                                            break
+                                        if isinstance(obj, str):
+                                            raw = obj
+                                            break
+                                    # Last resort: check e.args (some versions)
+                                    if raw is None and hasattr(e, "args"):
+                                        args = e.args
+                                        if isinstance(args, dict):
+                                            raw = args.get("content") or args.get("file") or args.get("data")
+                                        else:
+                                            raw = args
+                                    if raw is None:
+                                        raise ValueError(
+                                            f"could not extract content from upload event "
+                                            f"(attrs: {[a for a in dir(e) if not a.startswith('_')]})"
+                                        )
+                                    if isinstance(raw, (bytes, bytearray)):
+                                        raw = raw.decode("utf-8", errors="replace")
+                                    if not raw or not raw.strip():
+                                        raise ValueError("empty file")
+                                except Exception as ex:
+                                    ui.notify(f"Bad file: {ex}", type="negative")
+                                    return
+
+                                entries = [
+                                    line.strip()
+                                    for line in raw.splitlines()
+                                    if line.strip() and not line.strip().startswith("#")
+                                ]
+                                current = {
+                                    l.strip().lower(): l.strip()
+                                    for l in (rejects_ta.value or "").splitlines()
+                                    if l.strip()
+                                }
+                                added = 0
+                                for entry in entries:
+                                    if entry.lower() not in current:
+                                        current[entry.lower()] = entry
+                                        added += 1
+                                rejects_ta.value = "\n".join(current.values())
+                                dialog.close()
+                                render_suspects()  # imported entries may cover suspects
+                                ui.notify(
+                                    f"Imported {added} new entries "
+                                    f"(of {len(entries)} in file).",
+                                    type="positive",
+                                )
+
+                            ui.upload(
+                                label="Choose .txt file",
+                                on_upload=handle_upload,
+                                auto_upload=True,
+                            ).props("accept=.txt").style("width: 100%;")
+
+                            with ui.row().style("gap: 8px; margin-top: 8px;"):
+                                ui.button("Close", on_click=dialog.close).classes("btn-ghost")
+                        dialog.open()
+
+                    ui.button("Import Blacklist", on_click=open_import).classes("btn-ghost")\
+                        .style("font-size: 12px;")
+
+            # ── Suspects (Stage 2 flags + manual) ───────────────────────────
+            with ui.column().style("flex: 1; min-width: 0; gap: 4px;"):
+                ui.html('<div style="font-weight: 600; font-size: 13px;">'
+                        'Suspects <span style="color: var(--text-dim); '
+                        'font-weight: 400;">(flagged + your own)</span></div>')
+                ui.html(
+                    '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
+                    'Companies the pipeline demoted as staffing/recruiting agencies, plus '
+                    'any you add yourself. Nothing is blacklisted automatically — promote '
+                    'the real agencies, dismiss or remove the rest.</div>'
+                )
+
+                with ui.row().style("gap: 6px; width: 100%; margin-bottom: 6px; "
+                                    "align-items: center;"):
+                    add_in = ui.input(placeholder="Add a company you suspect…")\
+                        .props("outlined dense").style("flex: 1; min-width: 0;")
+
+                    def do_add_suspect():
+                        if add_manual_suspect(add_in.value):
+                            add_in.value = ""
+
+                    add_in.on("keydown.enter", lambda _: do_add_suspect())
+                    ui.button(icon="add", on_click=lambda: do_add_suspect())\
+                        .props("flat dense round size=sm").tooltip("Add to Suspects")
+
+                suspects_box = ui.column().style("gap: 6px; width: 100%;")
+
+                def render_suspects():
+                    suspects_box.clear()
+                    # Live textarea is the source of truth so promotes drop off at once.
+                    blacklisted = {l.strip().lower()
+                                   for l in (rejects_ta.value or "").splitlines() if l.strip()}
+                    dismissed = {d.strip().lower()
+                                 for d in cfg.get("dismissed_suspects", []) if d.strip()}
+                    rows = []           # (name, badge, kind)
+                    seen = set()
+
+                    def _hidden(low):
+                        return not low or any(b in low for b in blacklisted)
+
+                    for r in fetch_agency_suspects():
+                        name = (r.get("company") or "").strip()
+                        low = name.lower()
+                        if low in dismissed or low in seen or _hidden(low):
+                            continue
+                        seen.add(low)
+                        rows.append((name, f"×{r.get('hits', 0)}", "auto"))
+                    for name in cfg.get("manual_suspects", []):
+                        name = (name or "").strip()
+                        low = name.lower()
+                        if low in seen or _hidden(low):
+                            continue
+                        seen.add(low)
+                        rows.append((name, "added", "manual"))
+
+                    with suspects_box:
+                        if not rows:
+                            ui.html(
+                                '<div style="font-size: 12px; color: var(--text-dim);">'
+                                'No suspects yet — agencies the pipeline flags appear here, '
+                                'or add your own above.</div>'
+                            )
+                            return
+                        for name, badge, kind in rows:
+                            with ui.row().style("align-items: center; gap: 6px; width: 100%; "
+                                                "justify-content: space-between;"):
+                                ui.html(
+                                    f'<div style="font-size: 12.5px; font-family: '
+                                    f"'JetBrains Mono', monospace; overflow: hidden; "
+                                    f'text-overflow: ellipsis; white-space: nowrap;">'
+                                    f'{html.escape(name)} '
+                                    f'<span style="color: var(--text-dim);">{badge}</span></div>'
+                                )
+                                with ui.row().style("gap: 2px; flex: none;"):
+                                    ui.button(icon="block",
+                                              on_click=lambda c=name: promote_suspect(c))\
+                                        .props("flat dense round size=sm")\
+                                        .tooltip("Add to Blacklist")
+                                    if kind == "manual":
+                                        ui.button(icon="edit",
+                                                  on_click=lambda c=name: edit_manual_suspect(c))\
+                                            .props("flat dense round size=sm")\
+                                            .tooltip("Edit")
+                                        ui.button(icon="delete",
+                                                  on_click=lambda c=name: remove_manual_suspect(c))\
+                                            .props("flat dense round size=sm")\
+                                            .tooltip("Remove")
+                                    else:
+                                        ui.button(icon="close",
+                                                  on_click=lambda c=name: dismiss_suspect(c))\
+                                            .props("flat dense round size=sm")\
+                                            .tooltip("Not an agency — dismiss")
+
+                def add_manual_suspect(name: str) -> bool:
+                    name = (name or "").strip()
+                    if not name:
+                        return False
+                    m = list(cfg.get("manual_suspects", []))
+                    if name.lower() in {x.strip().lower() for x in m}:
+                        ui.notify(f"'{name}' is already a suspect.", type="info")
+                        return False
+                    m.append(name)
+                    cfg["manual_suspects"] = m
+                    save_config(cfg)
+                    render_suspects()
+                    ui.notify(f"Added '{name}' to Suspects.", type="positive")
+                    return True
+
+                def remove_manual_suspect(name: str):
+                    cfg["manual_suspects"] = [
+                        x for x in cfg.get("manual_suspects", [])
+                        if x.strip().lower() != name.strip().lower()
+                    ]
+                    save_config(cfg)
+                    render_suspects()
+                    ui.notify(f"Removed '{name}'.", type="info")
+
+                def edit_manual_suspect(old: str):
+                    with ui.dialog() as dialog, ui.card():
+                        ui.html('<div style="font-weight: 600;">Edit suspect</div>')
+                        inp = ui.input(value=old).props("outlined dense")\
+                            .style("width: 260px;")
+
+                        def save_edit():
+                            new = (inp.value or "").strip()
+                            m = [x for x in cfg.get("manual_suspects", [])
+                                 if x.strip().lower() != old.strip().lower()]
+                            if new and new.lower() not in {x.strip().lower() for x in m}:
+                                m.append(new)
+                            cfg["manual_suspects"] = m
+                            save_config(cfg)
+                            dialog.close()
+                            render_suspects()
+
+                        with ui.row().style("gap: 8px; margin-top: 8px;"):
+                            ui.button("Save", on_click=save_edit).classes("btn-primary")\
+                                .style("font-size: 12px;")
+                            ui.button("Cancel", on_click=dialog.close).classes("btn-ghost")\
+                                .style("font-size: 12px;")
+                    dialog.open()
+
+                def promote_suspect(company: str):
+                    existing = {l.strip().lower()
+                                for l in (rejects_ta.value or "").splitlines() if l.strip()}
+                    if company.lower() not in existing:
+                        cur = rejects_ta.value or ""
+                        rejects_ta.value = (cur + ("\n" if cur and not cur.endswith("\n") else "")
+                                            + company)
+                    cfg["hard_rejects"] = rejects_ta.value
+                    # A promoted manual suspect has served its purpose — drop it.
+                    cfg["manual_suspects"] = [x for x in cfg.get("manual_suspects", [])
+                                              if x.strip().lower() != company.lower()]
+                    save_config(cfg)
+                    render_suspects()
+                    ui.notify(f"'{company}' added to Blacklist.", type="positive")
+
+                def dismiss_suspect(company: str):
+                    d = list(cfg.get("dismissed_suspects", []))
+                    if company not in d:
+                        d.append(company)
+                    cfg["dismissed_suspects"] = d
+                    save_config(cfg)
+                    render_suspects()
+                    ui.notify(f"Dismissed '{company}'.", type="info")
+
+                render_suspects()
 
         ui.html('<div class="section-title">Scrape Settings</div>')
         with ui.row().style("gap: 14px; flex-wrap: wrap;"):

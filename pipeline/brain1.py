@@ -345,16 +345,74 @@ def scrape_team_contacts(domain: str, company: str = "", timeout: int = 5,
 
 
 # ── contact OSINT: web search (ddgs) → LLM snippet parse ──────────────────────
-# ddgs search engines; Yandex excluded (unreliable / frequent captchas).
-DDGS_BACKEND = "duckduckgo, brave, baidu, mojeek"
+# ddgs search engines; Yandex excluded (unreliable / frequent captchas), baidu
+# dropped (not a valid backend in this ddgs version).
+DDGS_BACKEND = "duckduckgo, startpage, mojeek"
+
+# Min seconds between ddgs searches — keyless engines (esp. Brave) return 429 when
+# hammered. All searches funnel through _ddgs_text() so they share this spacing.
+DDGS_MIN_INTERVAL = 3.0
+_ddgs_last_call = 0.0
+_ddgs_lock = threading.Lock()
+
+
+def _ddgs_text(query: str, max_results: int = 5, timeout: int = 8):
+    """Throttled single entry point for ddgs text searches: spaces consecutive
+    calls by at least DDGS_MIN_INTERVAL to stop the keyless-engine 429 flood."""
+    global _ddgs_last_call
+    from ddgs import DDGS
+    with _ddgs_lock:
+        wait = DDGS_MIN_INTERVAL - (time.monotonic() - _ddgs_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            return DDGS(timeout=timeout).text(
+                query, max_results=max_results, backend=DDGS_BACKEND
+            )
+        finally:
+            _ddgs_last_call = time.monotonic()
+
+
+# Detection-only repeat regex: a 3+ char chunk immediately repeated. Lower bar
+# than _REPEAT_RE (which strips 5+ loops); paired with the coverage test in
+# _is_degenerate so incidental doublings ("couscous") don't trip it.
+_DEGEN_REPEAT_RE = re.compile(r"(.{3,}?)\1+", re.DOTALL)
+
+
+def _is_degenerate(text: str, *, min_tokens: int = 6,
+                   distinct_ratio: float = 0.5,
+                   repeat_coverage: float = 0.5) -> bool:
+    """Detect LLM degeneration — looped words/phrases/substrings — for both short
+    names and longer prose. Catches 'stage stage stage…' and
+    'unidentifiableifiable'; leaves normal (even mildly repetitive) text alone."""
+    s = (text or "").strip()
+    if len(s) < 8:
+        return False
+    toks = s.split()
+    # 3+ identical tokens in a row — the clearest loop signal.
+    run = 1
+    for a, b in zip(toks, toks[1:]):
+        run = run + 1 if a.lower() == b.lower() else 1
+        if run >= 3:
+            return True
+    # Enough tokens but few distinct ones → looping.
+    if len(toks) >= min_tokens:
+        distinct = len(set(t.lower() for t in toks))
+        if distinct / len(toks) < distinct_ratio:
+            return True
+    # A tight (non-spaced) immediate substring repeat that dominates the text;
+    # spaced word-loops are left to the token checks above ("very very good").
+    for m in _DEGEN_REPEAT_RE.finditer(s):
+        unit = m.group(1)
+        if (len(unit) >= 4 and not any(c.isspace() for c in unit)
+                and len(m.group(0)) / len(s) >= repeat_coverage):
+            return True
+    return False
 
 
 def _plausible_name(nm: str) -> bool:
-    """Reject LLM-degenerate output (over-long or a token/phrase looped)."""
-    if len(nm) > 100:
-        return False
-    toks = nm.split()
-    return not (len(toks) >= 6 and len(set(t.lower() for t in toks)) <= len(toks) // 2)
+    """Reject LLM-degenerate output (over-long, or a looped token/phrase)."""
+    return len(nm) <= 100 and not _is_degenerate(nm)
 
 
 def web_search_contacts(company: str, domain: str,
@@ -364,9 +422,8 @@ def web_search_contacts(company: str, domain: str,
     if not company or client is None:
         return []
     try:
-        from ddgs import DDGS
         query = f"{company} founder OR CEO OR CTO"
-        results = DDGS(timeout=8).text(query, max_results=5, backend=DDGS_BACKEND)  # new instance per call
+        results = _ddgs_text(query, max_results=5, timeout=8)
         snippets = "\n".join(
             f"{r.get('title', '')}: {r.get('body', '')}" for r in (results or [])
         ).strip()
@@ -698,6 +755,70 @@ def _run_with_timeout(fn, timeout_s: float):
     return result["value"]
 
 
+class GemmaParseError(Exception):
+    """Model returned unparseable JSON — usually degenerate repetition that the
+    output-token cap truncated mid-structure. Distinct from transient transport
+    errors so callers can fall back instead of retrying a deterministic loop."""
+
+
+def _collapse_repetition(text: str) -> str:
+    """Collapse degenerate repeated runs ("agentic agentic agentic…") to a single
+    instance so a looping response stops eating the token buffer."""
+    prev = None
+    while prev != text:
+        prev = text
+        text = _REPEAT_RE.sub(r"\1", text)
+    return text
+
+
+def _close_truncated_json(text: str) -> str:
+    """Best-effort repair of JSON the token cap cut off mid-stream: terminate a
+    dangling string, drop a trailing comma, then balance open braces/brackets."""
+    s = text.rstrip()
+    stack, in_str, esc = [], False, False
+    for ch in s:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch in "{[":
+            stack.append(ch)
+        elif ch == "}" and stack and stack[-1] == "{":
+            stack.pop()
+        elif ch == "]" and stack and stack[-1] == "[":
+            stack.pop()
+    if in_str:
+        s += '"'
+    s = s.rstrip().rstrip(",")
+    for opener in reversed(stack):
+        s += "}" if opener == "{" else "]"
+    return s
+
+
+def _parse_or_salvage(raw: str, schema):
+    """Validate model JSON; on a truncated/degenerate response, collapse the
+    repetition and close dangling structures, then retry. Whatever fields
+    survived are kept; missing ones fall back to the schema defaults. Raises
+    GemmaParseError only when nothing parseable remains."""
+    text = _strip_json_fence(raw or "")
+    try:
+        return schema.model_validate_json(text)
+    except Exception:
+        pass
+    repaired = _close_truncated_json(_collapse_repetition(text))
+    try:
+        return schema.model_validate_json(repaired)
+    except Exception as e:
+        raise GemmaParseError(str(e)) from e
+
+
 # ── Gemma call wrapper ────────────────────────────────────────────────────────
 def call_gemma(
     client, model: str, backend: str,
@@ -743,7 +864,7 @@ def call_gemma(
                         timeout=per_call_timeout,
                     )
                     raw = response.choices[0].message.content or ""
-                    return schema.model_validate_json(_strip_json_fence(raw))
+                    return _parse_or_salvage(raw, schema)
                 return _run_with_timeout(_call_lmstudio, per_call_timeout + 5)
 
             def _call_gemma_api():
@@ -757,7 +878,7 @@ def call_gemma(
                 response = client.models.generate_content(
                     model=model, contents=prompt, config=config
                 )
-                return schema.model_validate_json(_strip_json_fence(response.text or ""))
+                return _parse_or_salvage(response.text or "", schema)
             return _run_with_timeout(_call_gemma_api, per_call_timeout)
         except Exception as e:
             msg = str(e)
@@ -894,8 +1015,20 @@ def gemma2_research(client, model, backend, company: str, domain: str, stage: st
         f"Company: {company}\nDomain: {domain}\n\n"
         f"=== WEBSITE CONTENT ===\n{site_content}"
     )
-    r = call_gemma(client, model, backend, system, prompt, CompanyResearch, stage=stage)
-    r.company_summary = _sanitize_summary(r.company_summary)
+    try:
+        r = call_gemma(client, model, backend, system, prompt, CompanyResearch, stage=stage)
+    except GemmaParseError as e:
+        # Degenerate/truncated output (common on thin-content obscure sites): record
+        # an honest "uncertain" rather than dropping the job or reprocessing forever.
+        log.warning(f"[stage2] unparseable research for {company}, recording uncertain: {e}")
+        r = CompanyResearch()
+    # Check raw output: _sanitize_summary's repetition-strip can mask the loop.
+    if _is_degenerate(r.company_summary):
+        log.warning(f"[stage2] degenerate summary for {company}, recording info-unavailable")
+        r.company_summary = "Info unavailable."
+        r.hiring_signal = "uncertain"
+    else:
+        r.company_summary = _sanitize_summary(r.company_summary)
     return r
 
 
@@ -1631,9 +1764,10 @@ def enrich_company_for_job(job_id: str) -> bool:
         conn.close()
 
 
-def find_contact_for_job(job_id: str) -> bool:
+def find_contact_for_job(job_id: str) -> int | None:
     """Find real contacts for a single job. Blocking; for the 'Find Contact' button.
-    Team-page + GitHub + web-search OSINT, permutation fallback. No fabricated names."""
+    Team-page + GitHub + web-search OSINT, permutation fallback. No fabricated names.
+    Returns the number of contacts found (0 = ran fine but none), or None on failure."""
     cfg = load_config()
     keys = load_keys()
     client, model, backend = get_gemma_client(cfg, keys, "stage3")
@@ -1642,7 +1776,7 @@ def find_contact_for_job(job_id: str) -> bool:
     try:
         job = load_job(conn, job_id)
         if not job:
-            return False
+            return None
         try:
             contacts = find_contacts(
                 job["company"], job["domain"], github_pat,
@@ -1650,10 +1784,10 @@ def find_contact_for_job(job_id: str) -> bool:
             )
             update_job_outreach(conn, job_id, contacts)
             log.info(f"[manual stage3] {len(contacts)} contact(s) for {job['company']}")
-            return True
+            return len(contacts)
         except Exception as e:
             log.error(f"[manual stage3] failed for {job_id}: {e}")
-            return False
+            return None
     finally:
         conn.close()
 
@@ -1672,9 +1806,8 @@ def search_person_email(name: str, company: str, domain: str = "",
     if not name:
         return ""
     try:
-        from ddgs import DDGS
         query = f'"{name}" {company} email'.strip()
-        results = DDGS(timeout=timeout).text(query, max_results=5, backend=DDGS_BACKEND)
+        results = _ddgs_text(query, max_results=5, timeout=timeout)
     except Exception as e:
         log.warning(f"[contacts] email search failed for {name} (skipping): {e}")
         return ""

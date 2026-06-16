@@ -2,11 +2,11 @@
   "theme": "dark",
   "profile": "",
   "search_terms": "AI engineer",
-  "hard_rejects": "Staffing agency\nmust be authorized to work in the US\nauthorized to work in the united states\nW2 only\nW-2\nsecurity clearance\nSecret clearance\nTS/SCI\non-site\nPhD required\nPhD is required\nstaffing agency\non behalf of our client\nrecruiting partner\nBairesDev\nTEKsystems\nJobgether\nWebologix\nCrossing Hurdles\nYO HR Consultancy\nRemoteHunter\nJames Search Group\nInterEx Group\nJobs via Dice\nMindrift\nDataAnnotation\nOutlier\nRemotasks\nRLHF trainer\nAI trainer\ndata labeling\ndata annotation\nJoveo\nAlignerr\ntalent pool\nconnects talent with\nTuring.com\nJobright\nHire Feed\nQuik Hire\nQuikHire\ninternship\nvolunteer\nunpaid\nequity only\npre-revenue",
-  "salary_floor": 10000,
+  "hard_rejects": "Staffing agency\nmust be authorized to work in the US\nauthorized to work in the united states\nW2 only\nW-2\nsecurity clearance\nSecret clearance\nTS/SCI\non-site\nPhD required\nPhD is required\nstaffing agency\non behalf of our client\nrecruiting partner\nBairesDev\nTEKsystems\nJobgether\nWebologix\nCrossing Hurdles\nYO HR Consultancy\nRemoteHunter\nJames Search Group\nInterEx Group\nJobs via Dice\nMindrift\nDataAnnotation\nOutlier\nRemotasks\nRLHF trainer\nAI trainer\ndata labeling\ndata annotation\nJoveo\nAlignerr\ntalent pool\nconnects talent with\nTuring.com\nJobright\nHire Feed\nQuik Hire\nQuikHire\ninternship\nvolunteer\nunpaid\nequity only\npre-revenue\nM1cro",
+  "salary_floor": 1000,
   "sources": [],
-  "results_wanted": 30,
-  "hours_old": 48,
+  "results_wanted": 50,
+  "hours_old": 72,
   "brain1_backend": "gemma",
   "brain1_lmstudio_url": "http://localhost:1234/v1",
   "brain1_lmstudio_model": "",
@@ -34,5 +34,8 @@
   "brain1_stage2_gemma_model": "gemma-4-26b-a4b-it",
   "brain1_stage3_gemma_model": "gemma-4-26b-a4b-it",
   "yc_hours_old": 720,
-  "use_rag": false
+  "use_rag": false,
+  "geo_eligibility": "",
+  "dismissed_suspects": [],
+  "manual_suspects": []
 }

@@ -93,6 +93,24 @@ def update_row_color(job_id: str, color: str) -> None:
         conn.close()
 
 
+def fetch_agency_suspects() -> list[dict]:
+    """Distinct companies the pipeline demoted as staffing/recruiting agencies
+    (Stage 2 agency heuristic, reject_reason 'stage2_demoted_from_...'). Persisted
+    naturally — demoted jobs stay in the DB, so this list grows across runs."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT company, COUNT(*) AS hits, MAX(date_scraped) AS last_seen "
+            "FROM jobs "
+            "WHERE reject_reason LIKE 'stage2_demoted_from_%' "
+            "AND company IS NOT NULL AND TRIM(company) != '' "
+            "GROUP BY LOWER(TRIM(company)) ORDER BY last_seen DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def update_verdict(job_id: str, verdict: str, reason: str = "") -> None:
     conn = get_db_connection()
     try:
