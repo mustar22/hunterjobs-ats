@@ -1008,7 +1008,7 @@ def render_setup_tab():
                               value=cfg["results_wanted"], step=10, min=10, max=200)\
                 .props("outlined").style("width: 200px;")
             ho_in = ui.number(label="Max hours old",
-                              value=cfg["hours_old"], step=12, min=12, max=336)\
+                              value=cfg["hours_old"], step=12, min=12)\
                 .props("outlined").style("width: 180px;")
 
         ui.html('<div class="section-title">Sources</div>')
