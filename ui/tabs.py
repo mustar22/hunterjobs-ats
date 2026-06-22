@@ -925,19 +925,26 @@ def render_setup_tab():
                                             .props("flat dense round size=sm")\
                                             .tooltip("Not an agency — dismiss")
 
+                def rerender_suspects():
+                    # Defer to the next tick: promote/dismiss buttons live inside
+                    # suspects_box, so re-rendering synchronously would delete the very
+                    # element whose click is still being handled (NiceGUI "parent slot
+                    # deleted" RuntimeError).
+                    ui.timer(0.05, render_suspects, once=True)
+
                 def add_manual_suspect(name: str) -> bool:
                     name = (name or "").strip()
                     if not name:
                         return False
                     m = list(cfg.get("manual_suspects", []))
                     if name.lower() in {x.strip().lower() for x in m}:
-                        ui.notify(f"'{name}' is already a suspect.", type="info")
+                        safe_notify(f"'{name}' is already a suspect.", type="info")
                         return False
                     m.append(name)
                     cfg["manual_suspects"] = m
                     save_config(cfg)
-                    render_suspects()
-                    ui.notify(f"Added '{name}' to Suspects.", type="positive")
+                    rerender_suspects()
+                    safe_notify(f"Added '{name}' to Suspects.", type="positive")
                     return True
 
                 def remove_manual_suspect(name: str):
@@ -946,8 +953,8 @@ def render_setup_tab():
                         if x.strip().lower() != name.strip().lower()
                     ]
                     save_config(cfg)
-                    render_suspects()
-                    ui.notify(f"Removed '{name}'.", type="info")
+                    rerender_suspects()
+                    safe_notify(f"Removed '{name}'.", type="info")
 
                 def edit_manual_suspect(old: str):
                     with ui.dialog() as dialog, ui.card():
@@ -964,7 +971,7 @@ def render_setup_tab():
                             cfg["manual_suspects"] = m
                             save_config(cfg)
                             dialog.close()
-                            render_suspects()
+                            rerender_suspects()
 
                         with ui.row().style("gap: 8px; margin-top: 8px;"):
                             ui.button("Save", on_click=save_edit).classes("btn-primary")\
@@ -985,8 +992,8 @@ def render_setup_tab():
                     cfg["manual_suspects"] = [x for x in cfg.get("manual_suspects", [])
                                               if x.strip().lower() != company.lower()]
                     save_config(cfg)
-                    render_suspects()
-                    ui.notify(f"'{company}' added to Blacklist.", type="positive")
+                    rerender_suspects()
+                    safe_notify(f"'{company}' added to Blacklist.", type="positive")
 
                 def dismiss_suspect(company: str):
                     d = list(cfg.get("dismissed_suspects", []))
@@ -994,8 +1001,8 @@ def render_setup_tab():
                         d.append(company)
                     cfg["dismissed_suspects"] = d
                     save_config(cfg)
-                    render_suspects()
-                    ui.notify(f"Dismissed '{company}'.", type="info")
+                    rerender_suspects()
+                    safe_notify(f"Dismissed '{company}'.", type="info")
 
                 render_suspects()
 

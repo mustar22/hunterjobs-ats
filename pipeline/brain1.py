@@ -922,7 +922,7 @@ def call_gemma(
 # ── Gemma #1 / #2 / #3 ────────────────────────────────────────────────────────
 def gemma1_filter(client, model, backend, description: str, profile: str,
                   location: str = "", is_remote=None, source: str = "",
-                  geo_eligibility: str = "") -> JobFilter:
+                  geo_eligibility: str = "", visa: str = "") -> JobFilter:
     system = (
         "You are a strict job filter. Evaluate this listing against the candidate "
         "profile below. Return GOOD if it's a strong match, MAYBE if uncertain but "
@@ -939,11 +939,18 @@ def gemma1_filter(client, model, backend, description: str, profile: str,
             "candidate lacks, or is 'remote' only within a region the candidate cannot "
             "legally work in, return BAD with reject_reason prefixed 'geo: '. Treat "
             "'remote' as ambiguous — count it eligible only if remote-global or within "
-            "a region the candidate can work."
+            "a region the candidate can work. A visa/citizenship requirement (e.g. "
+            "'US citizen/visa only', 'must be authorized to work in X') is a region-lock "
+            "→ geo: BAD unless the candidate is authorized there. A region-qualified "
+            "remote ('Remote (US)', 'Remote (CA)', 'Remote — EU only', etc.) is "
+            "remote-within-that-region only, NOT remote-global → geo: BAD unless the "
+            "candidate can work in that region."
         )
     remote_str = {True: "true", False: "false"}.get(is_remote, "unknown")
     meta = (f"Location: {location or 'unspecified'} | "
             f"Remote: {remote_str} | Source: {source or 'unspecified'}")
+    if (visa or "").strip():
+        meta += f" | Visa: {visa.strip()}"
     prompt = f"Job listing:\n{meta}\n\n{description[:6000]}"
     return call_gemma(client, model, backend, system, prompt, JobFilter, stage="stage1")
 
@@ -1250,6 +1257,8 @@ def yc_jobs_to_rows(yc_jobs: list[dict]) -> list[dict]:
             "date_posted": str(j.get("date_posted") or ""),
             # Keep YC's tri-state remote flag (True/False/None=unknown) for the pre-Stage-1 filter.
             "is_remote": j.get("is_remote"),
+            # WaaS-only structured visa requirement; feeds the Stage 1 geo check.
+            "visa": j.get("visa"),
         })
     return rows
 
@@ -1503,7 +1512,8 @@ def run_brain1() -> None:
         try:
             g1 = gemma1_filter(s1_client, s1_model, s1_backend, desc, profile_text,
                                location=job["location"], is_remote=row.get("is_remote"),
-                               source=job["source"], geo_eligibility=geo_text)
+                               source=job["source"], geo_eligibility=geo_text,
+                               visa=row.get("visa") or "")
             insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
             log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
             # Best-effort embed-on-scrape for RAG; a failed embed must never fail the scrape.

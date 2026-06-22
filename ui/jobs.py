@@ -546,6 +546,8 @@ def render_contact_section(row: dict, refresh_list_fn):
             # produced nothing → the contact genuinely has no email at all.
             has_email = bool((c.get("email") or "").strip())
             email = _esc(c.get("email"))
+            # Green = found/corroborated; red = pattern/permutation guess (may bounce).
+            email_color = "var(--bad)" if c.get("confidence") == "pattern" else "var(--good)"
             card_style = (
                 "padding: 6px 8px; border-radius: 6px; margin-bottom: 4px; "
             )
@@ -562,7 +564,7 @@ def render_contact_section(row: dict, refresh_list_fn):
                         if has_email:
                             ui.html(
                                 f'<div style="font-size: 13.5px;"><strong>{name}</strong> &mdash; {title}</div>'
-                                f'<div class="mono" style="font-size: 12px; color: var(--text-dim);">'
+                                f'<div class="mono" style="font-size: 12px; color: {email_color};">'
                                 f'{email} <span style="color: var(--text-faint);">'
                                 f'({conf} via {src})</span></div>'
                             )
