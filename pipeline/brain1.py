@@ -50,7 +50,7 @@ from openai import OpenAI
 
 from core.config import OPENROUTER_URL
 from core.database import get_db_connection, init_db
-from core.schemas import JobFilter, CompanyResearch, WebContacts
+from core.schemas import JobFilter, CompanyResearch
 from pipeline.sources import hn
 from pipeline.metering import ScanMeter
 import core.embeddings as embeddings
@@ -234,6 +234,10 @@ _NON_NAME_WORDS = {
     "product", "products", "platform", "solutions", "services", "features",
     "ai", "app", "inc", "llc", "ltd", "co", "corp", "gmbh", "io", "hq",
     "labs", "lab", "tech", "world", "first", "best",
+    # capability/marketing headings that pass the caps-name regex
+    "technical", "expertise", "engineering", "operations", "success",
+    "revenue", "insights", "excellence", "innovation", "security",
+    "unknown", "found", "name",
 }
 
 
@@ -346,33 +350,7 @@ def scrape_team_contacts(domain: str, company: str = "", timeout: int = 5,
     return contacts
 
 
-# ── contact OSINT: web search (ddgs) → LLM snippet parse ──────────────────────
-# ddgs search engines; Yandex excluded (unreliable / frequent captchas), baidu
-# dropped (not a valid backend in this ddgs version).
-DDGS_BACKEND = "duckduckgo, startpage, mojeek"
-
-# Min seconds between ddgs searches — keyless engines (esp. Brave) return 429 when
-# hammered. All searches funnel through _ddgs_text() so they share this spacing.
-DDGS_MIN_INTERVAL = 3.0
-_ddgs_last_call = 0.0
-_ddgs_lock = threading.Lock()
-
-
-def _ddgs_text(query: str, max_results: int = 5, timeout: int = 8):
-    """Throttled single entry point for ddgs text searches: spaces consecutive
-    calls by at least DDGS_MIN_INTERVAL to stop the keyless-engine 429 flood."""
-    global _ddgs_last_call
-    from ddgs import DDGS
-    with _ddgs_lock:
-        wait = DDGS_MIN_INTERVAL - (time.monotonic() - _ddgs_last_call)
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            return DDGS(timeout=timeout).text(
-                query, max_results=max_results, backend=DDGS_BACKEND
-            )
-        finally:
-            _ddgs_last_call = time.monotonic()
+# Web searches go through core.websearch (Tavily/Serper when keyed, ddgs fallback).
 
 
 # Detection-only repeat regex: a 3+ char chunk immediately repeated. Lower bar
@@ -415,46 +393,6 @@ def _is_degenerate(text: str, *, min_tokens: int = 6,
 def _plausible_name(nm: str) -> bool:
     """Reject LLM-degenerate output (over-long, or a looped token/phrase)."""
     return len(nm) <= 100 and not _is_degenerate(nm)
-
-
-def web_search_contacts(company: str, domain: str,
-                        client=None, model=None, backend=None) -> list[dict]:
-    """ddgs search for the company's leadership, then let the stage-23 LLM extract
-    any named person from the snippets. Fully contained: ANY failure → []."""
-    if not company or client is None:
-        return []
-    try:
-        query = f"{company} founder OR CEO OR CTO"
-        results = _ddgs_text(query, max_results=5, timeout=8)
-        snippets = "\n".join(
-            f"{r.get('title', '')}: {r.get('body', '')}" for r in (results or [])
-        ).strip()
-    except Exception as e:
-        log.warning(f"[stage3] web search failed (skipping): {e}")
-        return []
-    if not snippets:
-        return []
-    try:
-        system = (
-            "Extract real people named as founders/leadership of the company in "
-            "these web search snippets. Include ONLY names explicitly present in "
-            "the text. Never invent anyone. Empty list if no one is clearly named."
-        )
-        prompt = f"Company: {company}\n\n=== SEARCH SNIPPETS ===\n{snippets}"
-        result = call_gemma(client, model, backend, system, prompt,
-                            WebContacts, stage="stage3", max_output_tokens=512)
-        out = []
-        for c in result.contacts:
-            nm = (c.name or "").strip()
-            if nm and _plausible_name(nm):
-                out.append({
-                    "name": nm, "title": (c.title or "").strip(), "email": "",
-                    "source": "web", "confidence": "reported",
-                })
-        return out
-    except Exception as e:
-        log.warning(f"[stage3] web snippet parse failed (skipping): {e}")
-        return []
 
 
 _CONF_TIER = {"verified": 0, "reported": 1, "pattern": 2}
@@ -997,102 +935,8 @@ def _is_staffing_agency(culture_flags, summary: str) -> bool:
     return any(m in blob for m in _AGENCY_MARKERS)
 
 
-def gemma2_research(client, model, backend, company: str, domain: str, stage: str = "stage2") -> CompanyResearch:
-    # Validate domain — skip fetch entirely for garbage values like 'nan', '', None.
-    domain_clean = (domain or "").strip().lower()
-    if domain_clean in ("", "nan", "none", "null"):
-        site_content = "(no company domain available)"
-    else:
-        site_content = scrape_markdown(domain)
-
-    # No Google-search fetch: it returns CAPTCHA HTML and wastes tokens; the
-    # company site alone is enough for the classifier.
-
-    system = (
-        "You are a company OSINT analyst. Be brief and factual.\n"
-        "hiring_signal: looks_real if active hiring signs, ghost if posts old/empty/"
-        "evasive, uncertain if unclear.\n"
-        "company_size: tiny (<50), mid (50-500), enterprise (500+).\n"
-        "culture_flags: MUST include the literal string 'staffing_agency' if the company "
-        "is a staffing firm, recruiting agency, gig platform, body shop, data labeling "
-        "service, or any business that hires people to place them at other companies. "
-        "Also include 'data_labeling' for AI training/labeling/RLHF services. "
-        "Other red flags as plain strings. Empty list if none.\n"
-        "real_stack: confirmed tech only, empty list if nothing found."
-    )
-    prompt = (
-        f"Company: {company}\nDomain: {domain}\n\n"
-        f"=== WEBSITE CONTENT ===\n{site_content}"
-    )
-    try:
-        r = call_gemma(client, model, backend, system, prompt, CompanyResearch, stage=stage)
-    except GemmaParseError as e:
-        # Degenerate/truncated output (common on thin-content obscure sites): record
-        # an honest "uncertain" rather than dropping the job or reprocessing forever.
-        log.warning(f"[stage2] unparseable research for {company}, recording uncertain: {e}")
-        r = CompanyResearch()
-    # Check raw output: _sanitize_summary's repetition-strip can mask the loop.
-    if _is_degenerate(r.company_summary):
-        log.warning(f"[stage2] degenerate summary for {company}, recording info-unavailable")
-        r.company_summary = "Info unavailable."
-        r.hiring_signal = "uncertain"
-    else:
-        r.company_summary = _sanitize_summary(r.company_summary)
-    return r
-
-
-def find_contacts(company: str, domain: str, github_pat: str,
-                  client=None, model=None, backend=None) -> list[dict]:
-    """Build a contacts list from REAL data only — no fabricated names.
-
-    Merges (in priority order) team-page scrape, GitHub committers, web-search
-    snippets parsed by the LLM, then role-based permutation fallback. Every
-    source fails to [] independently. Deduped, decision-makers sorted first.
-    Each contact: {name, title, email, source, confidence}.
-    """
-    team = scrape_team_contacts(domain, company)
-    cdomain = clean_domain(domain)
-    gh = [{
-        "name": g.get("name") or "", "title": g.get("title") or "",
-        "email": g.get("email") or "",
-        "source": "github",
-        # Only a company-domain email is "verified"; bare presence isn't enough.
-        "confidence": ("verified" if g.get("email") and cdomain
-                       and g["email"].lower().endswith("@" + cdomain) else "reported"),
-    } for g in github_contacts(company, github_pat, domain)]
-    web = web_search_contacts(company, domain, client, model, backend)
-
-    perm = []
-    if cdomain:
-        for local in ("founder", "hello"):
-            perm.append({
-                "name": "", "title": "Founder / Eng lead — unverified",
-                "email": f"{local}@{cdomain}",
-                "source": "permutation", "confidence": "pattern",
-            })
-
-    merged = _merge_contacts([team, gh, web, perm])
-
-    # Connect real names (team/web/github) that lack an email to a usable
-    # pattern address — this is what makes the named people actually contactable.
-    # The real name + title stay attached; only the email is inferred.
-    if cdomain:
-        for c in merged:
-            if (c.get("name") and not c.get("email")
-                    and c.get("source") in ("team_page", "web", "github")):
-                cands = permutation_emails(c["name"], cdomain)
-                if cands:
-                    c["email"] = cands[0]
-                    c["confidence"] = "pattern"
-                    c["source"] = f"{c['source']}+permutation"
-
-    for c in merged:
-        c.setdefault("name", "")
-        c.setdefault("title", "")
-        c.setdefault("email", "")
-    merged.sort(key=lambda c: (_CONF_TIER.get(c.get("confidence"), 3),
-                               _title_rank(c.get("title", ""))))
-    return merged
+# Company research + contact discovery live in pipeline/enrich.py (one cached
+# enrichment pass per company); the OSINT helpers above are its building blocks.
 
 
 # ── DB write helpers ──────────────────────────────────────────────────────────
@@ -1102,7 +946,7 @@ JOB_INSERT_COLS = (
     "id", "title", "company", "domain", "location", "job_type",
     "salary_min", "salary_max", "currency", "source", "url",
     "description", "date_posted", "date_scraped", "description_hash",
-    "date_posted_estimated",
+    "date_posted_estimated", "yc_slug",
 )
 
 
@@ -1111,13 +955,14 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
     """judged=False = QUEUED path: stored in full but gemma1_done stays 0."""
     params = {c: job.get(c) for c in JOB_INSERT_COLS}
     params["date_posted_estimated"] = int(params.get("date_posted_estimated") or 0)
+    params["yc_slug"] = params.get("yc_slug") or ""
     conn.execute(
         """
         INSERT OR REPLACE INTO jobs (
             id, title, company, domain, location, job_type,
             salary_min, salary_max, currency, source, url,
             description, date_posted, date_scraped, description_hash,
-            date_posted_estimated,
+            date_posted_estimated, yc_slug,
             verdict, reject_reason, gemma1_done,
             company_summary, hiring_signal, real_stack, culture_flags, company_size,
             gemma2_done, gemma3_done,
@@ -1126,7 +971,7 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
             :id, :title, :company, :domain, :location, :job_type,
             :salary_min, :salary_max, :currency, :source, :url,
             :description, :date_posted, :date_scraped, :description_hash,
-            :date_posted_estimated,
+            :date_posted_estimated, :yc_slug,
             :verdict, :reject_reason, :gemma1_done,
             NULL, 'uncertain', '[]', '[]', 'tiny',
             0, 0,
@@ -1272,6 +1117,8 @@ def yc_jobs_to_rows(yc_jobs: list[dict]) -> list[dict]:
             # WaaS dates are estimates from rounded relative ages; flag them
             # so filtering/UI never treat them as real.
             "date_posted_estimated": 1 if j.get("ats") == "waas" else 0,
+            # YC slug unlocks the profile-page founders fetch at enrichment
+            "yc_slug": j.get("company_yc_slug") or "",
             # Keep YC's tri-state remote flag (True/False/None=unknown) for the pre-Stage-1 filter.
             "is_remote": j.get("is_remote"),
             # WaaS-only structured visa requirement; feeds the Stage 1 geo check.
@@ -1563,6 +1410,7 @@ def run_brain1() -> None:
             "date_scraped": datetime.now(timezone.utc).isoformat(),
             "description_hash": dhash,
             "date_posted_estimated": int(row.get("date_posted_estimated") or 0),
+            "yc_slug": str(row.get("yc_slug") or ""),
         }
 
         counts["scraped"] += 1
@@ -1705,27 +1553,40 @@ def run_brain1() -> None:
                 f"{counts['bad']} BAD, {counts['hard_rej']} hard-rejected"
             )
 
-        # ── Stage 2: research each GOOD company sequentially ─────────────────
-        survivors: list[dict] = []
+        # ── enrichment: research + contacts per company, one cached pass ─────
         if not aborted and good_jobs:
-            log.info(f"[stage2] starting research on {len(good_jobs)} GOOD jobs")
+            from pipeline import enrich
+            log.info(f"[enrich] starting on {len(good_jobs)} GOOD jobs")
             for i, job in enumerate(good_jobs, 1):
                 if not runner_status.dashboard_is_alive(max_age_seconds=90):
-                    log.warning("[stage2] dashboard gone, stopping enrichment")
+                    log.warning("[enrich] dashboard gone, stopping")
                     aborted = True
                     break
                 runner_status.patch(
                     "brain1",
-                    stage2=f"researching {job['company']} ({i}/{len(good_jobs)})",
+                    stage2=f"enriching {job['company']} ({i}/{len(good_jobs)})",
+                    stage3="merged into research",
                 )
                 try:
-                    research = gemma2_research(
-                        s2_client, s2_model, s2_backend,
-                        job["company"], job["domain"],
+                    # email baked into the posting = the contact hunt is free
+                    baked = enrich.posting_emails(job.get("description"))
+                    e = enrich.enrich_company(
+                        conn, cfg, job["company"], job["domain"],
+                        client=s2_client, model=s2_model, backend=s2_backend,
+                        yc_slug=job.get("yc_slug") or "",
+                        skip_hunt=bool(baked), meter=meter,
                     )
-                    meter.count("stage2_runs")
+                    research = CompanyResearch(
+                        company_summary=e["company_summary"],
+                        hiring_signal=e["hiring_signal"],
+                        real_stack=e["real_stack"],
+                        culture_flags=e["culture_flags"],
+                        company_size=e["company_size"],
+                    )
                     update_job_research(conn, job["id"], research)
                     job["company_summary"] = research.company_summary
+                    contacts = _merge_contacts([baked, e["contacts"]])
+                    update_job_outreach(conn, job["id"], contacts)
 
                     # Demote only on agency signals, not bare product-labeling.
                     if _is_staffing_agency(research.culture_flags, research.company_summary):
@@ -1739,51 +1600,22 @@ def run_brain1() -> None:
                         )
                         conn.commit()
                         log.info(
-                            f"[stage2] [{i}/{len(good_jobs)}] {job['company']} "
+                            f"[enrich] [{i}/{len(good_jobs)}] {job['company']} "
                             f"-> DEMOTED (staffing/recruiting)"
                         )
                     else:
-                        survivors.append(job)
                         log.info(
-                            f"[stage2] [{i}/{len(good_jobs)}] {job['company']} "
-                            f"-> {research.hiring_signal} ({research.company_size})"
+                            f"[enrich] [{i}/{len(good_jobs)}] {job['company']} "
+                            f"-> {research.hiring_signal} ({research.company_size}), "
+                            f"{len(contacts)} contact(s)"
+                            f"{' [cache]' if e.get('from_cache') else ''}"
+                            f"{' [posting email]' if baked else ''}"
                         )
                 except Exception as e:
                     log.error(
-                        f"[stage2] [{i}/{len(good_jobs)}] failed for {job['company']}: {e}"
+                        f"[enrich] [{i}/{len(good_jobs)}] failed for {job['company']}: {e}"
                     )
-                    # Failed enrichment: keep the job as GOOD so user can manually retry
-                    survivors.append(job)
-            runner_status.patch("brain1", stage2="idle")
-
-        # ── Stage 3: outreach for survivors ──────────────────────────────────
-        if not aborted and survivors:
-            log.info(f"[stage3] starting outreach on {len(survivors)} survivors")
-            for i, job in enumerate(survivors, 1):
-                if not runner_status.dashboard_is_alive(max_age_seconds=90):
-                    log.warning("[stage3] dashboard gone, stopping outreach")
-                    aborted = True
-                    break
-                runner_status.patch(
-                    "brain1",
-                    stage3=f"outreach for {job['company']} ({i}/{len(survivors)})",
-                )
-                try:
-                    contacts = find_contacts(
-                        job["company"], job["domain"], github_pat,
-                        s3_client, s3_model, s3_backend,
-                    )
-                    meter.count("stage3_runs")
-                    update_job_outreach(conn, job["id"], contacts)
-                    log.info(
-                        f"[stage3] [{i}/{len(survivors)}] {job['company']} "
-                        f"-> {len(contacts)} contact(s)"
-                    )
-                except Exception as e:
-                    log.error(
-                        f"[stage3] [{i}/{len(survivors)}] failed for {job['company']}: {e}"
-                    )
-            runner_status.patch("brain1", stage3="idle")
+            runner_status.patch("brain1", stage2="idle", stage3="idle")
 
         # ledger housekeeping: flag listings gone from their boards
         if not aborted:
@@ -1825,9 +1657,11 @@ def run_brain1() -> None:
 
 
 # ── Single-job public entry points (for dashboard MAYBE buttons) ──────────────
-def enrich_company_for_job(job_id: str) -> bool:
-    """Run Gemma 2 for a single job. Blocking; meant for the MAYBE 'Research' button.
-    Also demotes the job to BAD if Gemma 2 detects staffing/labeling agency."""
+def _manual_enrich(job_id: str, stage_label: str):
+    """Shared body for the manual Research / Find Contact buttons: force a full
+    enrichment (research + hunt, cache refreshed) and persist onto the job.
+    Returns (job, enrichment) or (None, None)."""
+    from pipeline import enrich
     cfg = load_config()
     keys = load_keys()
     client, model, backend = get_gemma_client(cfg, keys, "stage2")
@@ -1835,13 +1669,24 @@ def enrich_company_for_job(job_id: str) -> bool:
     try:
         job = load_job(conn, job_id)
         if not job:
-            return False
+            return None, None
         try:
-            r = gemma2_research(
-                client, model, backend, job["company"], job["domain"],
-                stage="manual",
+            baked = enrich.posting_emails(job.get("description"))
+            e = enrich.enrich_company(
+                conn, cfg, job["company"], job["domain"],
+                client=client, model=model, backend=backend,
+                yc_slug=job.get("yc_slug") or "", force=True,
+            )
+            r = CompanyResearch(
+                company_summary=e["company_summary"],
+                hiring_signal=e["hiring_signal"],
+                real_stack=e["real_stack"],
+                culture_flags=e["culture_flags"],
+                company_size=e["company_size"],
             )
             update_job_research(conn, job_id, r)
+            contacts = _merge_contacts([baked, e["contacts"]])
+            update_job_outreach(conn, job_id, contacts)
 
             if _is_staffing_agency(r.culture_flags, r.company_summary):
                 original = job.get("verdict", "?")
@@ -1854,46 +1699,33 @@ def enrich_company_for_job(job_id: str) -> bool:
                     ),
                 )
                 conn.commit()
-                log.info(
-                    f"[manual stage2] {job['company']} -> DEMOTED from {original} "
-                    f"(staffing/recruiting)"
-                )
+                log.info(f"[{stage_label}] {job['company']} -> DEMOTED from {original} "
+                         f"(staffing/recruiting)")
             else:
-                log.info(f"[manual stage2] {job['company']} -> {r.hiring_signal}")
-            return True
-        except Exception as e:
-            log.error(f"[manual stage2] failed for {job_id}: {e}")
-            return False
+                log.info(f"[{stage_label}] {job['company']} -> {r.hiring_signal}, "
+                         f"{len(contacts)} contact(s)")
+            e["contacts"] = contacts
+            return job, e
+        except Exception as ex:
+            log.error(f"[{stage_label}] failed for {job_id}: {ex}")
+            return job, None
     finally:
         conn.close()
+
+
+def enrich_company_for_job(job_id: str) -> bool:
+    """Manual 'Research' button: full forced enrichment. Demotes on agency."""
+    job, e = _manual_enrich(job_id, "manual research")
+    return bool(job and e)
 
 
 def find_contact_for_job(job_id: str) -> int | None:
-    """Find real contacts for a single job. Blocking; for the 'Find Contact' button.
-    Team-page + GitHub + web-search OSINT, permutation fallback. No fabricated names.
-    Returns the number of contacts found (0 = ran fine but none), or None on failure."""
-    cfg = load_config()
-    keys = load_keys()
-    client, model, backend = get_gemma_client(cfg, keys, "stage3")
-    github_pat = keys.get("github", "")
-    conn = get_db_connection()
-    try:
-        job = load_job(conn, job_id)
-        if not job:
-            return None
-        try:
-            contacts = find_contacts(
-                job["company"], job["domain"], github_pat,
-                client, model, backend,
-            )
-            update_job_outreach(conn, job_id, contacts)
-            log.info(f"[manual stage3] {len(contacts)} contact(s) for {job['company']}")
-            return len(contacts)
-        except Exception as e:
-            log.error(f"[manual stage3] failed for {job_id}: {e}")
-            return None
-    finally:
-        conn.close()
+    """Manual 'Find Contact' button: same forced enrichment; returns contact
+    count (0 = ran fine but none), None on failure."""
+    job, e = _manual_enrich(job_id, "manual contact")
+    if not job or e is None:
+        return None
+    return len(e.get("contacts") or [])
 
 
 # ── On-demand per-person email search (точечный, UI-triggered only) ────────────
@@ -1906,18 +1738,13 @@ def search_person_email(name: str, company: str, domain: str = "",
     the company domain; falls back to the first non-noreply email only when no
     company domain is known. Returns '' on any failure / no result. Fully
     contained — never raises."""
+    from core import websearch
     name = (name or "").strip()
     if not name:
         return ""
-    try:
-        query = f'"{name}" {company} email'.strip()
-        results = _ddgs_text(query, max_results=5, timeout=timeout)
-    except Exception as e:
-        log.warning(f"[contacts] email search failed for {name} (skipping): {e}")
-        return ""
-    blob = " ".join(
-        f"{r.get('title', '')} {r.get('body', '')}" for r in (results or [])
-    )
+    results = websearch.search(f'"{name}" {company} email'.strip(),
+                               max_results=5, timeout=timeout)
+    blob = " ".join(f"{r['title']} {r['body']}" for r in results)
     emails = [e for e in _EMAIL_RE.findall(blob) if "noreply" not in e.lower()]
     if not emails:
         return ""

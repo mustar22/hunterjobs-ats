@@ -1016,17 +1016,29 @@ def render_setup_tab():
             rw_in = ui.number(label="Results per term",
                               value=cfg["results_wanted"], step=10, min=10, max=200)\
                 .props("outlined").style("width: 200px;")
+            rw_in.tooltip("LinkedIn/Indeed only: listings fetched per search term. "
+                          "No effect on YC (whole companies) or HN (whole thread).")
             ho_in = ui.number(label="Max hours old",
                               value=cfg["hours_old"], step=12, min=12)\
                 .props("outlined").style("width: 180px;")
+            ho_in.tooltip("Freshness window for LinkedIn/Indeed/HN real dates. "
+                          "YC has its own window; estimated dates are ledger-governed.")
             cap_in = ui.number(label="LLM jobs per scan (0 = no cap)",
                                value=cfg.get("max_llm_jobs_per_scan", 100),
                                step=10, min=0)\
                 .props("outlined").style("width: 220px;")
-            expire_in = ui.number(label="Mark listing dead after N days unseen (0 = never)",
+            expire_in = ui.number(label="Listing expiry, days",
                                   value=cfg.get("ledger_expire_days", 60),
                                   step=10, min=0)\
-                .props("outlined").style("width: 220px;")
+                .props("outlined").style("width: 170px;")
+            expire_in.tooltip("A job unseen on its board for this many days is "
+                              "marked dead (probably filled). 0 = never.")
+            ttl_in = ui.number(label="Company cache, days",
+                               value=cfg.get("company_ttl_days", 30),
+                               step=5, min=0)\
+                .props("outlined").style("width: 170px;")
+            ttl_in.tooltip("How long company research + contacts stay valid before "
+                           "a scan re-researches them. 0 = keep forever.")
 
         ui.html('<div class="section-title">Sources</div>')
         sources_set = set(cfg["sources"])
@@ -1252,6 +1264,7 @@ def render_setup_tab():
                 # `or 0` not 100: 0 is a legit "no cap" choice here
                 "max_llm_jobs_per_scan": int(cap_in.value or 0),
                 "ledger_expire_days": int(expire_in.value or 0),
+                "company_ttl_days": int(ttl_in.value or 0),
                 "use_rag": bool(rag_cb.value),
                 # Save the actual ticked list — an empty list is allowed (YC-only run).
                 # Do NOT coerce back to ["linkedin"]; that silently forces LinkedIn on.

@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-9d6fff" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.6.0-9d6fff" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
   <img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-orange" />
   <img alt="tests" src="https://github.com/mustar22/hunterjobs-ats/actions/workflows/test.yml/badge.svg" />
@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <sub><strong>v0.5.0 just shipped</strong> &mdash; never judge the same job twice (first-seen ledger), per-scan LLM budget with a queued backlog, and honest job dates. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
+  <sub><strong>v0.6.0 just shipped</strong> &mdash; company enrichment rebuilt: YC founders as contacts, one cached research pass per company, emails read straight from postings. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
 </p>
 
 ---
@@ -64,8 +64,7 @@ Two AI "brains" running locally on your machine, sharing one SQLite database.
 flowchart LR
     subgraph Brain1["Brain 1 — Pipeline"]
         direction TB
-        S1["Stage 1<br/>Scrape + Filter<br/>(Gemma)"] --> S2["Stage 2<br/>Company OSINT<br/>(Gemma)"]
-        S2 --> S3["Stage 3<br/>Contact Discovery<br/>(Gemma)"]
+        S1["Stage 1<br/>Scrape + Filter<br/>(Gemma)"] --> S2["Enrichment<br/>Company OSINT + Contacts<br/>(one cached pass per company)"]
     end
 
     subgraph Brain2["Brain 2 — Strategist"]
@@ -77,18 +76,16 @@ flowchart LR
 
     S1 --> DB
     S2 --> DB
-    S3 --> DB
     DB --> Snap
     DB --> Chat
 ```
 
-**Brain 1** is the pipeline. Three LLM calls per job, in order:
+**Brain 1** is the pipeline:
 
 | Stage | What it does | LLM |
 |------:|---|---|
-| 1 | Scrape job boards, hard-reject obvious noise (keyword blacklist), then GOOD/MAYBE/BAD verdict against your profile. | Gemma 4 (free tier on Google AI Studio) |
-| 2 | For GOOD jobs: scrape the company website, classify size, real stack, hiring signal, culture flags. Auto-demote to BAD if it's a staffing agency / IT consulting body-shop wearing a product-company costume. | Gemma 4 |
-| 3 | For Stage 2 survivors: real contact discovery &mdash; team-page scrape + web search + GitHub org members, surfacing real names sorted decision-maker-first, with name-to-email permutation and on-demand per-person email search. No guessed names, no auto-drafts &mdash; honest "unknown" when nothing's found. | Gemma 4 |
+| 1 | Scrape job boards, hard-reject obvious noise (keyword blacklist), then GOOD/MAYBE/BAD verdict against your profile &mdash; up to your per-scan budget; overflow queues for the next scan. | Gemma 4 (free tier on Google AI Studio) |
+| Enrichment | For GOOD jobs, one cached pass per company: research (size, real stack, hiring signal, staffing-agency demote) **and** contact discovery in a single call. Contacts come from emails printed in the posting itself, YC profile founders, team pages, GitHub orgs, and web search &mdash; real names sorted decision-maker-first, guessed emails clearly marked, honest "unknown" when nothing's found. Cached 30 days, so five jobs at one company cost one pass. | Gemma 4 |
 
 **Brain 2** is the strategist. Periodically aggregates your last 7 days of data and produces a brutal report on positioning, salary realism, surging skills, and patterns in your rejection pile. You can also chat with it &mdash; it has read-only SQL access to your jobs table so you can ask "show me the 11 GOOD jobs sorted by salary" and it'll run an actual query. An editable **persona** field shapes its voice and behavior across both the snapshot and chat.
 
@@ -197,6 +194,16 @@ Your `keys.py` is gitignored. Don't commit it.
 ---
 
 ## Changelog & Roadmap
+
+### v0.6.0 — shipped
+
+- **Enrichment rebuilt** &mdash; the old Stage 2 (research) and Stage 3 (contacts) merged into ONE LLM call per company, fed with everything gathered first: YC profile data, the company site (homepage &rarr; /about &rarr; web-search fallback &mdash; no more judging on "(fetch failed)"), team pages, GitHub orgs
+- **YC founders as contacts** &mdash; founder names + titles pulled from the public YC company profile, marked `verified via yc`. For YC jobs this alone puts a real decision-maker on nearly every card
+- **Emails read straight from postings** &mdash; "email us at jane (at) acme (dot) com" in the listing (common on HN) becomes a verified contact for free, and skips the rest of the hunt
+- **Company cache** &mdash; new `companies` table: research + contacts once per company across jobs AND scans (TTL, Setup field). N listings at one company = one pass
+- **Pluggable web search** &mdash; optional `TAVILY_API_KEY` / `SERPER_API_KEY` in keys.py for reliable search; keyless ddgs remains the default so no account is ever required
+- Contact precision: strict person-name guard (no more LLM placeholders or marketing headings as "people"), team-page crawl skipped when founders are known (kills customer-testimonials-as-team), literal "null" titles sanitized
+- Test suite 94 &rarr; 120
 
 ### v0.5.0 — shipped
 

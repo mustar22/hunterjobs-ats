@@ -27,7 +27,7 @@
   "brain1_openrouter_model": "nvidia/nemotron-nano-9b-v2:free",
   "brain2_openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
   "brain2_persona": "",
-  "use_hn": false,
+  "use_hn": true,
   "hn_remote_only": false,
   "hn_max_jobs": 200,
   "brain1_stage1_gemma_model": "gemma-4-26b-a4b-it",
@@ -39,5 +39,6 @@
   "dismissed_suspects": [],
   "manual_suspects": [],
   "max_llm_jobs_per_scan": 0,
-  "ledger_expire_days": 60
+  "ledger_expire_days": 60,
+  "company_ttl_days": 30
 }

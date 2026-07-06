@@ -7,3 +7,6 @@ OPENAI_API_KEY    = ""  # from https://platform.openai.com (optional, for Brain 
 OPENROUTER_API_KEY = ""  # from https://openrouter.ai/keys (optional, OpenAI-compatible, Brain 1 + Brain 2)
 GITHUB_PAT        = ""  # optional: classic PAT with no extra scopes, used only for
                         # GitHub user/event search to find public commit emails
+TAVILY_API_KEY    = ""  # optional: https://tavily.com (1k searches/mo free) — reliable
+                        # web search for company research; falls back to keyless ddgs
+SERPER_API_KEY    = ""  # optional: https://serper.dev — Google SERP alternative to Tavily

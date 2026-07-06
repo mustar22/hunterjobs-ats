@@ -54,6 +54,8 @@ DEFAULT_CONFIG = {
     "max_llm_jobs_per_scan": 100,
     # Ledger rows not sighted for this many days are marked expired (0 = never).
     "ledger_expire_days": 60,
+    # Company research/contacts cache lifetime (0 = never expires).
+    "company_ttl_days": 30,
     "use_rag": True,  # off = no embedding calls, no similar-applications panel
     "brain1_backend": "gemma",
     "brain1_stage1_backend": "gemma",

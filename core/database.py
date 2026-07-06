@@ -156,6 +156,25 @@ SEEN_JOBS_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_seen_last ON seen_jobs(last_seen_at);
 """
 
+# Company intel cache: research + contacts once per company, reused across
+# jobs and scans (TTL). The hosted version ships this pre-seeded.
+COMPANIES_TABLE = """
+CREATE TABLE IF NOT EXISTS companies (
+    company_key     TEXT PRIMARY KEY,   -- normalized domain, else cleaned name
+    name            TEXT,
+    domain          TEXT,
+    yc_slug         TEXT,
+    company_summary TEXT,
+    hiring_signal   TEXT,
+    real_stack      TEXT,               -- JSON list
+    culture_flags   TEXT,               -- JSON list
+    company_size    TEXT,
+    contacts        TEXT,               -- JSON list of contact dicts
+    hunted          INTEGER DEFAULT 0,  -- 1 = full contact hunt was performed
+    researched_at   TEXT
+);
+"""
+
 # Per-scan usage record — future billing hook (user_id = later ALTER TABLE).
 SCAN_USAGE_TABLE = """
 CREATE TABLE IF NOT EXISTS scan_usage (
@@ -221,6 +240,7 @@ def init_db() -> None:
     c.execute(BRAIN2_CHAT_TABLE)
     c.execute(SEEN_JOBS_TABLE)
     c.execute(SEEN_JOBS_INDEX)
+    c.execute(COMPANIES_TABLE)
     c.execute(SCAN_USAGE_TABLE)
     c.execute(FTS_TABLE)
     for trig in TRIGGERS:
@@ -241,6 +261,7 @@ def init_db() -> None:
         ("row_color", "TEXT DEFAULT ''"),
         ("contacts",  "TEXT DEFAULT ''"),
         ("date_posted_estimated", "INTEGER DEFAULT 0"),
+        ("yc_slug", "TEXT DEFAULT ''"),
     ]:
         if col not in existing_cols:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_def}")

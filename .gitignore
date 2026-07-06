@@ -3,6 +3,7 @@ keys.py
 
 # state / runtime data (personal)
 db/
+core/db/
 *.db
 *.db-wal
 *.db-shm

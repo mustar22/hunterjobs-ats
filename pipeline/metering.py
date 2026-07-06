@@ -21,16 +21,19 @@ def _now_iso() -> str:
 class ScanMeter:
     """One per scan. Flushes eagerly so a crashed scan leaves an honest row."""
 
-    def __init__(self, conn: sqlite3.Connection, cap: int):
+    def __init__(self, conn: sqlite3.Connection, cap: int,
+                 close_zombies: bool = True):
         self.conn = conn
         self.cap = int(cap)  # <= 0 → unlimited
         self.counts = {f: 0 for f in _FIELDS}
-        # a hard-killed scan (Stop button) never reaches finish(); close its row
-        conn.execute(
-            "UPDATE scan_usage SET finished_at = ?, error = 'interrupted' "
-            "WHERE finished_at IS NULL",
-            (_now_iso(),),
-        )
+        # a hard-killed scan (Stop button) never reaches finish(); close its
+        # row. Single-process assumption — multi-user callers pass False.
+        if close_zombies:
+            conn.execute(
+                "UPDATE scan_usage SET finished_at = ?, error = 'interrupted' "
+                "WHERE finished_at IS NULL",
+                (_now_iso(),),
+            )
         cur = conn.execute(
             "INSERT INTO scan_usage (started_at, cap) VALUES (?, ?)",
             (_now_iso(), self.cap),

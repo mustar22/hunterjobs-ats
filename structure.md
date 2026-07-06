@@ -12,12 +12,15 @@ core/                   leaf layer, no deps on pipeline/ui
   config.py             DEFAULT_CONFIG + config.json load/save, API key loading
   database.py           SQLite schema (WAL + FTS5), DB at core/db/hunterjobs_ats.db
   ledger.py             seen_jobs helpers — first/last sighting, judged flag, expiry
+  companies.py          company intel cache (companies table) — key/get/save, TTL
+  websearch.py          pluggable web search: Tavily/Serper when keyed, ddgs fallback
   schemas.py            Pydantic models for structured LLM outputs
   runner_status.py      file-based IPC (runner_status.json): state, PID, heartbeat
   embeddings.py         RAG — Gemini embeddings + sqlite-vec
 
 pipeline/
-  brain1.py             the scan: scrape → Stage 1 filter → Stage 2 research → Stage 3 outreach
+  brain1.py             the scan: scrape → Stage 1 filter → enrichment
+  enrich.py             per-company research + contacts in ONE LLM call, cache-first
   metering.py           ScanMeter — per-scan Stage 1 cap + scan_usage row
   sources/hn.py         HN "Who is hiring?" source (Algolia + Firebase, no auth)
   brain2.py             market analyst snapshot (7-day aggregate → LLM)
@@ -54,9 +57,14 @@ fetcher — all state (dedup, freshness, metering) lives in HunterJobs' DB.
    - hard-reject keywords → BAD, free (no LLM call, doesn't touch the cap)
    - cap reached → stored as `verdict='QUEUED'`, judged next scan
    - otherwise Stage 1 LLM verdict: GOOD / MAYBE / BAD
-3. **Stage 2**: GOOD jobs get company research; staffing agencies demoted to BAD.
-4. **Stage 3**: survivors get contact OSINT + outreach draft.
-5. **Housekeeping**: ledger rows unseen for `ledger_expire_days` get
+3. **Enrichment** (replaces the old Stage 2/3 split): per GOOD job, one
+   cache-first company pass — posting-baked emails (free, skips the hunt),
+   YC profile founders + descriptions, company site (homepage → /about →
+   search-snippet fallback), team-page crawl, GitHub org, then ONE LLM call
+   producing research + extracted people. Cached in `companies` (TTL
+   `company_ttl_days`, default 30d), so N jobs at one company cost one pass.
+   Staffing agencies still demoted to BAD.
+4. **Housekeeping**: ledger rows unseen for `ledger_expire_days` get
    `expired_at` (listing gone = probably filled); `scan_usage` row finalized.
 
 ## Identity & freshness rules
@@ -79,6 +87,7 @@ version; a `user_id` column is a later `ALTER TABLE`.
 
 ## Tests
 
-`pytest` from repo root, 94 tests, all offline: pure logic (`test_core.py`),
+`pytest` from repo root, 112 tests, all offline: pure logic (`test_core.py`),
 ledger + meter on in-memory DBs (`test_ledger.py`, `test_metering.py`), and
-full stubbed `run_brain1` acceptance runs (`test_acceptance.py`).
+full stubbed `run_brain1` acceptance runs (`test_acceptance.py`) and enrichment
+cache tests (`test_enrich.py`).

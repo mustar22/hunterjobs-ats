@@ -41,6 +41,12 @@ class WebContact(BaseModel):
     title: str = ""
 
 
+class CompanyEnrichment(CompanyResearch):
+    """One combined research + people pass (replaces separate Stage 2/3 calls).
+    people: real names explicitly present in the provided content only."""
+    people: list[WebContact] = Field(default_factory=list)
+
+
 class WebContacts(BaseModel):
     """Stage 3 web-snippet extraction: real people named in search results only."""
     contacts: list[WebContact] = Field(default_factory=list)
