@@ -61,7 +61,11 @@ def main() -> None:
         except (OSError, json.JSONDecodeError) as e:
             print(f"could not clear profile/persona: {e}")
 
-    print("Done.")
+    # Recreate the schema — a running/next dashboard must not hit a bare file.
+    from core.database import init_db
+    init_db()
+    print("recreated empty schema")
+    print("Done. If the dashboard was running, restart it.")
 
 
 if __name__ == "__main__":

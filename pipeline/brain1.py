@@ -52,7 +52,9 @@ from core.config import OPENROUTER_URL
 from core.database import get_db_connection, init_db
 from core.schemas import JobFilter, CompanyResearch, WebContacts
 from pipeline.sources import hn
+from pipeline.metering import ScanMeter
 import core.embeddings as embeddings
+import core.ledger as ledger
 import core.runner_status as runner_status
 
 # JobSpy 1.1.82 bug: an unrecognized posting country (e.g. "moldova") raises in
@@ -1094,13 +1096,28 @@ def find_contacts(company: str, domain: str, github_pat: str,
 
 
 # ── DB write helpers ──────────────────────────────────────────────────────────
-def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str) -> None:
+# Also used to trim DB rows back into insertable dicts (py3.12 sqlite3
+# complains about unused named params).
+JOB_INSERT_COLS = (
+    "id", "title", "company", "domain", "location", "job_type",
+    "salary_min", "salary_max", "currency", "source", "url",
+    "description", "date_posted", "date_scraped", "description_hash",
+    "date_posted_estimated",
+)
+
+
+def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
+                            judged: bool = True) -> None:
+    """judged=False = QUEUED path: stored in full but gemma1_done stays 0."""
+    params = {c: job.get(c) for c in JOB_INSERT_COLS}
+    params["date_posted_estimated"] = int(params.get("date_posted_estimated") or 0)
     conn.execute(
         """
         INSERT OR REPLACE INTO jobs (
             id, title, company, domain, location, job_type,
             salary_min, salary_max, currency, source, url,
             description, date_posted, date_scraped, description_hash,
+            date_posted_estimated,
             verdict, reject_reason, gemma1_done,
             company_summary, hiring_signal, real_stack, culture_flags, company_size,
             gemma2_done, gemma3_done,
@@ -1109,13 +1126,15 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str) -
             :id, :title, :company, :domain, :location, :job_type,
             :salary_min, :salary_max, :currency, :source, :url,
             :description, :date_posted, :date_scraped, :description_hash,
-            :verdict, :reject_reason, 1,
+            :date_posted_estimated,
+            :verdict, :reject_reason, :gemma1_done,
             NULL, 'uncertain', '[]', '[]', 'tiny',
             0, 0,
             0, NULL
         )
         """,
-        {**job, "verdict": verdict, "reject_reason": reject_reason},
+        {**params, "verdict": verdict, "reject_reason": reject_reason,
+         "gemma1_done": 1 if judged else 0},
     )
     conn.commit()
 
@@ -1158,7 +1177,8 @@ def update_job_outreach(conn, job_id: str, contacts: list[dict]) -> None:
 
 
 def should_process(conn, job_id: str, new_hash: str) -> tuple[bool, bool]:
-    """Returns (should_process, is_new). Handles smart dedup on description hash."""
+    """Returns (should_process, is_new). Known ids never re-enter Stage 1 —
+    listing edits just refresh the stored hash, the verdict stands."""
     row = conn.execute(
         "SELECT description_hash FROM jobs WHERE id = ?", (job_id,)
     ).fetchone()
@@ -1166,12 +1186,9 @@ def should_process(conn, job_id: str, new_hash: str) -> tuple[bool, bool]:
         return True, True
     if row["description_hash"] != new_hash:
         conn.execute(
-            "UPDATE jobs SET description_hash=?, gemma1_done=0, gemma2_done=0, "
-            "gemma3_done=0 WHERE id=?",
-            (new_hash, job_id),
+            "UPDATE jobs SET description_hash=? WHERE id=?", (new_hash, job_id)
         )
         conn.commit()
-        return True, False
     return False, False
 
 
@@ -1184,18 +1201,15 @@ def fallback_job_id(row) -> str:
     """Build a stable, collision-free id for scraped rows that lack a native id
     (YC listings — JobSpy rows already carry a numeric id).
 
-    Two distinct YC postings can share company + title + date: the same role is
-    often listed for several locations, and YC's date_posted is truncated to the
-    day. So ``company_title_date`` alone is NOT unique and two different jobs
-    would collide on one id. We append a short hash of job_url — unique per
-    posting and stable across runs (same posting → same id), which dedup and RAG
-    both rely on."""
-    base = f"{row.get('company')}_{row.get('title')}_{row.get('date_posted')}"
+    No date_posted in the id: WaaS dates are scrape-time estimates that shift
+    daily, which would mint a fresh id (= fresh LLM call) every scan. The url
+    hash alone is unique and stable; date is a last resort for URL-less rows."""
+    base = f"{row.get('company')}_{row.get('title')}"
     url = str(row.get("job_url") or "")
     if url:
         suffix = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
         return f"{base}_{suffix}"
-    return base
+    return f"{base}_{row.get('date_posted')}"
 
 
 # ── JobSpy wrapper with defensive country retry ───────────────────────────────
@@ -1255,6 +1269,9 @@ def yc_jobs_to_rows(yc_jobs: list[dict]) -> list[dict]:
             "job_url": j.get("job_url") or "",
             "description": j.get("description") or "",
             "date_posted": str(j.get("date_posted") or ""),
+            # WaaS dates are estimates from rounded relative ages; flag them
+            # so filtering/UI never treat them as real.
+            "date_posted_estimated": 1 if j.get("ats") == "waas" else 0,
             # Keep YC's tri-state remote flag (True/False/None=unknown) for the pre-Stage-1 filter.
             "is_remote": j.get("is_remote"),
             # WaaS-only structured visa requirement; feeds the Stage 1 geo check.
@@ -1273,48 +1290,50 @@ def apply_yc_remote_filter(rows: list[dict], remote_only: bool) -> list[dict]:
 
 
 def _parse_yc_date(s: str):
-    """Parse a YC row's date_posted (ISO 'YYYY-MM-DD' from the company ATS) to a
-    date. Returns None when empty or unparseable."""
+    """Parse a row's date_posted to an aware UTC datetime. Day-granular strings
+    ('YYYY-MM-DD', from ATS boards) become midnight UTC; full ISO timestamps
+    (HN comments) keep their exact time. Returns (dt, day_granular) —
+    (None, True) when empty or unparseable."""
     s = (s or "").strip()
     if not s:
-        return None
+        return None, True
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt, len(s) <= 10
     except ValueError:
         try:
-            return datetime.strptime(s[:10], "%Y-%m-%d").date()
+            return (datetime.strptime(s[:10], "%Y-%m-%d")
+                    .replace(tzinfo=timezone.utc)), True
         except ValueError:
-            return None
+            return None, True
 
 
 def apply_yc_date_filter(rows: list[dict], hours_old: int,
                          now: datetime | None = None,
                          return_stats: bool = False):
-    """Keep only YC rows whose date_posted falls within the last `hours_old`
-    hours — the freshness window JobSpy enforces server-side but YC has no param
-    for, so stale 2024/2025 listings would otherwise leak in.
-
-    YC dates are day-granular ISO strings from the company ATS (Greenhouse
-    updated_at / Lever createdAt / Ashby publishedAt), so the window is compared
-    at day granularity (erring toward inclusion at the boundary). Undated or
-    unparseable rows are DROPPED, not kept: we can't confirm they're fresh, and
-    silently treating them as fresh is exactly the stale-leak bug. hours_old<=0
-    disables the filter (keep all).
-
-    return_stats=True returns (kept, stale_count, undated_count) for diagnostics;
-    default returns just the kept list (unchanged behavior)."""
+    """Freshness window over REAL posting dates (JobSpy does this server-side;
+    YC/HN have no param for it). Estimated dates (WaaS) pass through — they're
+    fabrications, the ledger + cap govern them instead. Day-granular dates
+    compare by date (inclusive), full timestamps (HN) compare exactly.
+    Undated rows are dropped: can't confirm fresh = the stale-leak bug.
+    hours_old<=0 disables. return_stats adds (stale, undated) drop counts."""
     if not hours_old or hours_old <= 0:
         return (rows, 0, 0) if return_stats else rows
     now = now or datetime.now(timezone.utc)
-    cutoff_date = (now - timedelta(hours=hours_old)).date()
+    cutoff = now - timedelta(hours=hours_old)
     kept = []
     stale = undated = 0  # diagnostic split of the dropped rows; does not affect kept
     for r in rows:
-        d = _parse_yc_date(str(r.get("date_posted") or ""))
-        if d is not None and d >= cutoff_date:
+        if r.get("date_posted_estimated"):
             kept.append(r)
-        elif d is None:
+            continue
+        dt, day_granular = _parse_yc_date(str(r.get("date_posted") or ""))
+        if dt is None:
             undated += 1
+        elif (dt.date() >= cutoff.date()) if day_granular else (dt >= cutoff):
+            kept.append(r)
         else:
             stale += 1
     return (kept, stale, undated) if return_stats else kept
@@ -1378,6 +1397,8 @@ def run_brain1() -> None:
     results_wanted = int(cfg.get("results_wanted", 100))
     hours_old = int(cfg.get("hours_old", 72))
     yc_hours_old = int(cfg.get("yc_hours_old", 720))
+    max_llm_jobs = int(cfg.get("max_llm_jobs_per_scan", 100))
+    ledger_expire_days = int(cfg.get("ledger_expire_days", 60))
     use_rag = bool(cfg.get("use_rag", True))
     github_pat = keys.get("github", "")
 
@@ -1395,16 +1416,26 @@ def run_brain1() -> None:
     log.info(f"Terms: {len(search_terms)} | Rejects: {len(hard_rejects)} | Sources: {sources} | YC: {use_yc} | HN: {use_hn}")
     log.info("=" * 60)
 
-    # Empty JobSpy sources is legit for a YC/HN-only run; all off = nothing to do,
-    # so exit rather than silently forcing LinkedIn back on.
+    # All sources off + empty queue = nothing to do. With QUEUED backlog it's a
+    # legit drain-only run: judge leftovers without re-scraping anything.
     if not has_scrape_source(sources, use_yc, use_hn):
-        log.warning(
-            "No scrape sources enabled: JobSpy site list is empty and YC/HN are off. "
-            "Nothing to scrape — enable LinkedIn/Indeed, Y Combinator, or Hacker News in Setup."
-        )
-        runner_status.start("brain1")
-        runner_status.finish("brain1", error="no sources enabled")
-        return
+        init_db()
+        _c = get_db_connection()
+        try:
+            pending = _c.execute(
+                "SELECT COUNT(*) FROM jobs WHERE verdict='QUEUED'"
+            ).fetchone()[0]
+        finally:
+            _c.close()
+        if not pending:
+            log.warning(
+                "No scrape sources enabled and no queued jobs. Nothing to do — "
+                "enable LinkedIn/Indeed, Y Combinator, or Hacker News in Setup."
+            )
+            runner_status.start("brain1")
+            runner_status.finish("brain1", error="no sources enabled")
+            return
+        log.info(f"[stage1] no scrape sources; drain-only run ({pending} queued)")
 
     init_db()
     runner_status.start("brain1")
@@ -1436,20 +1467,59 @@ def run_brain1() -> None:
     threading.Thread(target=_watchdog, daemon=True, name="brain1-watchdog").start()
 
     counts = {"scraped": 0, "good": 0, "maybe": 0, "bad": 0, "hard_rej": 0,
-              "no_desc": 0}
+              "no_desc": 0, "judged": 0, "queued": 0}
 
     good_jobs: list[dict] = []
     # Cross-source dedup by job_url (LinkedIn/Indeed/YC can overlap within a run).
     seen_urls: set[str] = set()
 
     conn = get_db_connection()
+    meter = ScanMeter(conn, cap=max_llm_jobs)
     last_heartbeat = time.monotonic()
     aborted = False
+    scan_error: str | None = None
+
+    def _judge_job(job: dict, is_remote=None, visa: str = "",
+                   progress_label: str = "") -> None:
+        """Stage 1 verdict + persist. Caller checks the cap; a failed call
+        still counts (the attempt was spent)."""
+        runner_status.patch(
+            "brain1",
+            stage1=f"filter {counts['scraped']} {progress_label}",
+        )
+        try:
+            g1 = gemma1_filter(s1_client, s1_model, s1_backend,
+                               job["description"], profile_text,
+                               location=job["location"], is_remote=is_remote,
+                               source=job["source"], geo_eligibility=geo_text,
+                               visa=visa)
+            insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
+            log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
+            # Best-effort embed-on-scrape for RAG; a failed embed must never fail the scrape.
+            if use_rag:
+                embeddings.embed_and_store(conn, job)
+            if g1.verdict == "GOOD":
+                counts["good"] += 1
+                job["verdict"] = "GOOD"  # stage 2 reads this
+                good_jobs.append(job)
+            elif g1.verdict == "MAYBE":
+                counts["maybe"] += 1
+            else:
+                counts["bad"] += 1
+        except Exception as e:
+            log.error(f"[stage1] Gemma1 failed for {job['id']}: {e}")
+            insert_job_with_verdict(conn, job, "BAD", f"gemma1_error: {e}")
+            counts["bad"] += 1
+            time.sleep(1)
+        counts["judged"] += 1
+        ledger.mark_judged(conn, job["id"])
+        meter.count("judged")
+        runner_status.patch("brain1", **counts)
 
     def _process_row(row, progress_label: str) -> bool:
-        """Run one scraped row (JobSpy Series or YC dict) through hard-reject +
-        Stage 1. Returns False if the dashboard heartbeat died and we should
-        abort the whole scrape; True otherwise (including normal skips)."""
+        """The Stage 1 choke point: ledger → dedup → hard-reject (free) →
+        cap gate (overflow QUEUED) → LLM judge. Returns False only when the
+        dashboard heartbeat died and the scrape should abort."""
         nonlocal last_heartbeat
         if not runner_status.dashboard_is_alive(max_age_seconds=90):
             log.warning("Dashboard heartbeat lost (>90s). Self-terminating.")
@@ -1469,6 +1539,8 @@ def run_brain1() -> None:
             return True
         if url:
             seen_urls.add(url)
+        # every sighting lands in the ledger, judged or not
+        ledger.upsert_seen(conn, job_id, str(row.get("site") or ""))
         dhash = description_hash(desc)
         process, is_new = should_process(conn, job_id, dhash)
         if not process:
@@ -1490,55 +1562,58 @@ def run_brain1() -> None:
             "date_posted": str(row.get("date_posted") or ""),
             "date_scraped": datetime.now(timezone.utc).isoformat(),
             "description_hash": dhash,
+            "date_posted_estimated": int(row.get("date_posted_estimated") or 0),
         }
 
         counts["scraped"] += 1
+        meter.count("scraped")
 
-        # ── hard reject ──
+        # ── hard reject (free: no LLM call, never counts against the cap) ──
         # Include company name: many staffing firms have giveaway names but normal job text.
         reject_text = f"{job['title']} {job['company']} {desc}"
         reject_kw = hard_reject_check(reject_text, hard_rejects)
         if reject_kw:
             insert_job_with_verdict(conn, job, "BAD", f"hard_reject: {reject_kw}")
             counts["hard_rej"] += 1
+            meter.count("hard_rejected")
             runner_status.patch("brain1", **counts)
             return True
 
-        # ── Gemma 1 filter ──
-        runner_status.patch(
-            "brain1",
-            stage1=f"filter {counts['scraped']} {progress_label}",
-        )
-        try:
-            g1 = gemma1_filter(s1_client, s1_model, s1_backend, desc, profile_text,
-                               location=job["location"], is_remote=row.get("is_remote"),
-                               source=job["source"], geo_eligibility=geo_text,
-                               visa=row.get("visa") or "")
-            insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
-            log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
-            # Best-effort embed-on-scrape for RAG; a failed embed must never fail the scrape.
-            if use_rag:
-                embeddings.embed_and_store(conn, job)
-            if g1.verdict == "GOOD":
-                counts["good"] += 1
-                job["verdict"] = "GOOD"  # stage 2 reads this
-                good_jobs.append(job)
-            elif g1.verdict == "MAYBE":
-                counts["maybe"] += 1
-            else:
-                counts["bad"] += 1
+        # ── cap gate: over budget → persist as QUEUED, judge next scan ──
+        if not meter.can_judge():
+            insert_job_with_verdict(conn, job, "QUEUED", "", judged=False)
+            counts["queued"] += 1
+            meter.count("queued")
             runner_status.patch("brain1", **counts)
+            return True
 
-        except Exception as e:
-            log.error(f"[stage1] Gemma1 failed for {job_id}: {e}")
-            insert_job_with_verdict(conn, job, "BAD", f"gemma1_error: {e}")
-            counts["bad"] += 1
-            time.sleep(1)
+        _judge_job(job, is_remote=row.get("is_remote"),
+                   visa=str(row.get("visa") or ""), progress_label=progress_label)
         return True
 
     try:
+        # drain QUEUED overflow from previous scans first, FIFO, same cap
+        queued_rows = conn.execute(
+            "SELECT * FROM jobs WHERE verdict='QUEUED' ORDER BY date_scraped ASC"
+        ).fetchall()
+        if queued_rows:
+            log.info(f"[stage1] draining {len(queued_rows)} queued jobs from previous scans")
+            runner_status.patch(
+                "brain1", stage1=f"judging {len(queued_rows)} queued from last scan"
+            )
+            for qrow in queued_rows:
+                if not runner_status.dashboard_is_alive(max_age_seconds=90):
+                    log.warning("Dashboard heartbeat lost (>90s). Self-terminating.")
+                    aborted = True
+                    break
+                if not meter.can_judge():
+                    break  # rest stays QUEUED for the next scan
+                job = {c: qrow[c] for c in JOB_INSERT_COLS}
+                _judge_job(job, progress_label="(queued)")
+
         # YC-only run (no JobSpy sites) skips this loop — avoids an empty JobSpy call.
-        scrape_terms = list(enumerate(search_terms, 1)) if jobspy_enabled(sources) else []
+        scrape_terms = (list(enumerate(search_terms, 1))
+                        if not aborted and jobspy_enabled(sources) else [])
         if not scrape_terms:
             log.info("[stage1] No JobSpy sources selected; skipping LinkedIn/Indeed scrape.")
         for term_idx, term in scrape_terms:
@@ -1648,6 +1723,7 @@ def run_brain1() -> None:
                         s2_client, s2_model, s2_backend,
                         job["company"], job["domain"],
                     )
+                    meter.count("stage2_runs")
                     update_job_research(conn, job["id"], research)
                     job["company_summary"] = research.company_summary
 
@@ -1697,6 +1773,7 @@ def run_brain1() -> None:
                         job["company"], job["domain"], github_pat,
                         s3_client, s3_model, s3_backend,
                     )
+                    meter.count("stage3_runs")
                     update_job_outreach(conn, job["id"], contacts)
                     log.info(
                         f"[stage3] [{i}/{len(survivors)}] {job['company']} "
@@ -1708,7 +1785,22 @@ def run_brain1() -> None:
                     )
             runner_status.patch("brain1", stage3="idle")
 
+        # ledger housekeeping: flag listings gone from their boards
+        if not aborted:
+            expired = ledger.prune_expired(conn, ledger_expire_days)
+            if expired:
+                log.info(f"[ledger] marked {expired} unseen-for-{ledger_expire_days}d "
+                         f"listings as expired")
+
+    except Exception as e:
+        scan_error = str(e)
+        raise
     finally:
+        try:
+            meter.finish(error=scan_error or
+                         ("aborted: dashboard closed" if aborted else None))
+        except Exception:
+            pass
         try:
             conn.close()
         except Exception:
@@ -1720,12 +1812,14 @@ def run_brain1() -> None:
         log.info("Brain 1 aborted by missing dashboard heartbeat.")
     else:
         runner_status.finish("brain1")
+        cap_note = f" (cap {meter.cap})" if meter.cap > 0 else ""
         log.info("=" * 60)
         log.info(
             f"Brain 1 complete | scraped={counts['scraped']} "
+            f"hard_rejected={counts['hard_rej']} "
+            f"judged={counts['judged']}{cap_note} queued={counts['queued']} | "
             f"good={counts['good']} maybe={counts['maybe']} "
-            f"bad={counts['bad']} hard_rej={counts['hard_rej']} "
-            f"no_desc={counts['no_desc']}"
+            f"bad={counts['bad']} no_desc={counts['no_desc']}"
         )
         log.info("=" * 60)
 

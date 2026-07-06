@@ -49,6 +49,11 @@ DEFAULT_CONFIG = {
     "hn_max_jobs": 200,
     "results_wanted": 100,
     "hours_old": 72,
+    # Per-scan cap on Stage 1 LLM verdicts (0 = unlimited). Hard-rejects and
+    # ledger skips are free; overflow is stored QUEUED and drained FIFO next scan.
+    "max_llm_jobs_per_scan": 100,
+    # Ledger rows not sighted for this many days are marked expired (0 = never).
+    "ledger_expire_days": 60,
     "use_rag": True,  # off = no embedding calls, no similar-applications panel
     "brain1_backend": "gemma",
     "brain1_stage1_backend": "gemma",

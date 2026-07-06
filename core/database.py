@@ -139,6 +139,40 @@ CREATE TABLE IF NOT EXISTS brain2_messages (
 );
 """
 
+# First-seen ledger: one row per stable job identity (job_key = jobs.id).
+# Owns "new since last scan" — upstream dates never decide that.
+SEEN_JOBS_TABLE = """
+CREATE TABLE IF NOT EXISTS seen_jobs (
+    job_key       TEXT PRIMARY KEY,
+    source        TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL,
+    judged_at     TEXT,               -- NULL = never entered Stage 1
+    expired_at    TEXT                -- set when not seen for ledger_expire_days
+);
+"""
+
+SEEN_JOBS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_seen_last ON seen_jobs(last_seen_at);
+"""
+
+# Per-scan usage record — future billing hook (user_id = later ALTER TABLE).
+SCAN_USAGE_TABLE = """
+CREATE TABLE IF NOT EXISTS scan_usage (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT,
+    scraped       INTEGER DEFAULT 0,
+    hard_rejected INTEGER DEFAULT 0,
+    judged        INTEGER DEFAULT 0,  -- Stage 1 LLM verdicts (the metered unit)
+    queued        INTEGER DEFAULT 0,
+    stage2_runs   INTEGER DEFAULT 0,
+    stage3_runs   INTEGER DEFAULT 0,
+    cap           INTEGER,
+    error         TEXT                -- NULL = clean finish
+);
+"""
+
 FTS_TABLE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
     title, company, description, real_stack,
@@ -185,6 +219,9 @@ def init_db() -> None:
     c.execute(JOBS_TABLE)
     c.execute(MARKET_TABLE)
     c.execute(BRAIN2_CHAT_TABLE)
+    c.execute(SEEN_JOBS_TABLE)
+    c.execute(SEEN_JOBS_INDEX)
+    c.execute(SCAN_USAGE_TABLE)
     c.execute(FTS_TABLE)
     for trig in TRIGGERS:
         c.execute(trig)
@@ -203,6 +240,7 @@ def init_db() -> None:
         ("notes",     "TEXT DEFAULT ''"),
         ("row_color", "TEXT DEFAULT ''"),
         ("contacts",  "TEXT DEFAULT ''"),
+        ("date_posted_estimated", "INTEGER DEFAULT 0"),
     ]:
         if col not in existing_cols:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_def}")

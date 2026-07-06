@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.4.5-9d6fff" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-9d6fff" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
   <img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-orange" />
   <img alt="tests" src="https://github.com/mustar22/hunterjobs-ats/actions/workflows/test.yml/badge.svg" />
@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <sub><strong>v0.4.5 just shipped</strong> &mdash; geo-eligibility filtering, ~100% YC (WaaS) coverage, and Stage 3 contact-quality fixes (no more stranger emails). <a href="#changelog--roadmap">See changelog &darr;</a></sub>
+  <sub><strong>v0.5.0 just shipped</strong> &mdash; never judge the same job twice (first-seen ledger), per-scan LLM budget with a queued backlog, and honest job dates. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
 </p>
 
 ---
@@ -177,7 +177,7 @@ Open the **Setup** tab and:
 
 ## Privacy
 
-Everything is local. Your profile, scraped jobs, notes, color labels, chat history, embeddings &mdash; all in `db/hunterjobs_ats.db` on your machine. The only network calls go to the LLM provider you pick (or none at all if you use LM Studio), plus the job-board/ATS endpoints when scraping.
+Everything is local. Your profile, scraped jobs, notes, color labels, chat history, embeddings &mdash; all in `core/db/hunterjobs_ats.db` on your machine. The only network calls go to the LLM provider you pick (or none at all if you use LM Studio), plus the job-board/ATS endpoints when scraping.
 
 Stage 3 contact discovery only surfaces publicly available information &mdash; names and roles from company team pages, public web results, and public GitHub org membership &mdash; so you can address one real person instead of `careers@`. It guesses nothing: when there's no public signal, it says so.
 
@@ -188,7 +188,7 @@ Your `keys.py` is gitignored. Don't commit it.
 ## Known limitations
 
 - **JobSpy can be flaky** &mdash; LinkedIn occasionally rate-limits, and JobSpy 1.1.82 has a bug where it mis-parses some listings' locations into an invalid-country error that aborts the whole scrape. HunterJobs patches around that at runtime (see the comment block in `pipeline/brain1.py`), but a search term can still occasionally produce nothing on a given day.
-- **YC dates are approximate for WaaS-fallback jobs** &mdash; companies without a discoverable ATS board are covered via their public YC profile page, but those postings only expose rounded relative ages ("5 months"), so `date_posted` there is a conservative estimate, not exact.
+- **YC dates are approximate for WaaS-fallback jobs** &mdash; companies without a discoverable ATS board only expose rounded relative ages ("5 months"), so `date_posted` there is an estimate. As of v0.5 these are flagged, rendered as `~date`, and never used for freshness decisions &mdash; the first-seen ledger decides what's new.
 - **LinkedIn doesn't always return a posting date or location** &mdash; some rows show blank for those. That's upstream data, not a bug.
 - **Stage 2/3 fail more often than I'd like** &mdash; Gemma 4 sometimes returns malformed JSON or just times out. There are manual retry buttons inside each job's expansion for both.
 - **Local models < 20B params chat poorly with tools.** They'll echo the tool result back into their text. Snapshot generation with local models is fine; chat works best with Gemini or Claude.
@@ -197,6 +197,16 @@ Your `keys.py` is gitignored. Don't commit it.
 ---
 
 ## Changelog & Roadmap
+
+### v0.5.0 — shipped
+
+- **First-seen ledger** &mdash; every job identity gets `first_seen_at` / `last_seen_at` in a new `seen_jobs` table. A job is judged **once, ever**: re-scrapes and listing edits never burn another LLM call. This also fixed a real leak where WaaS jobs (whose dates are scrape-time estimates) minted a new id every day and got silently re-judged
+- **Per-scan LLM budget** &mdash; `max_llm_jobs_per_scan` (Setup field, default 100, 0 = off) caps how many Stage 1 verdicts one scan may spend. Hard-rejects stay free. Overflow is stored as `QUEUED` and judged next scan, oldest first; with all sources unticked a scan becomes a pure queue-drain run (no scraping)
+- **Usage metering** &mdash; every scan writes a `scan_usage` row: scraped / hard-rejected / judged / queued / Stage 2 / Stage 3 counts. Killed scans get closed out honestly as `interrupted`
+- **Honest dates** &mdash; WaaS-estimated dates are flagged, shown as `~date`, and never drive freshness filtering; ATS boards and HN keep real dates (HN now at exact comment-time precision)
+- **"First seen" everywhere** &mdash; jobs list sorts newest-sighted-first with a time-window filter (24h / 3d / 7d / 30d); counts row split into Judged (LLM) / Bad / Hard Rej / Queued so free keyword kills stop masquerading as LLM verdicts
+- **UI quality** &mdash; job expansions stay open across refreshes (manual research no longer collapses your tabs); permutation email guesses hidden behind a per-job toggle, marked red, and sorted last &mdash; guessed means guessed
+- Migration: `python scripts/migrate_v05.py` (backs up your DB, stabilizes YC ids, backfills the ledger). Test suite 58 → 94
 
 ### v0.4.5 — shipped
 

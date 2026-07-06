@@ -169,9 +169,11 @@ def parse_comment(item: dict | None, thread_date: str = "") -> dict | None:
 
     cid = item.get("id")
     # Comment time, not the monthly thread date, is the posting's real age.
+    # Full timestamp (not just the date): HN is the one source with exact
+    # per-posting times, so the freshness window compares at hour precision.
     t = item.get("time")
     if t:
-        date_posted = datetime.fromtimestamp(t, tz=timezone.utc).date().isoformat()
+        date_posted = datetime.fromtimestamp(t, tz=timezone.utc).isoformat()
     else:
         date_posted = thread_date
 

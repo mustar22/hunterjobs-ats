@@ -9,6 +9,7 @@ apply buttons). render_job_row is reused by the Applied tab (ui.tabs).
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from nicegui import ui
 
@@ -35,6 +36,7 @@ def render_jobs_tab():
     state = {
         "verdicts": ["GOOD", "MAYBE"],
         "query": "",
+        "window_days": 0,  # 0 = all time; filters on ledger first_seen_at
     }
 
     # ── Top row: scan button + live status ────────────────────────────────────
@@ -100,11 +102,15 @@ def render_jobs_tab():
                 f'&nbsp;&nbsp;<span class="mono">stage3:</span> {s.get("stage3","idle")}'
             )
         elif s["state"] == "done":
+            # queued > 0 = the per-scan LLM cap was hit; leftovers judge next scan
+            queued = s.get("queued", 0)
+            queued_bit = f' · queued={queued} (cap hit)' if queued else ''
             status_html.set_content(
                 f'<span class="status-dot {dot}"></span>last run: '
                 f'<span class="mono">scraped={s.get("scraped",0)} '
-                f'good={s.get("good",0)} maybe={s.get("maybe",0)} '
-                f'bad={s.get("bad",0)} hard_rej={s.get("hard_rej",0)}</span>'
+                f'hard_rej={s.get("hard_rej",0)} judged={s.get("judged",0)}'
+                f'{queued_bit} · good={s.get("good",0)} '
+                f'maybe={s.get("maybe",0)} bad={s.get("bad",0)}</span>'
             )
         elif s["state"] == "error":
             status_html.set_content(
@@ -131,7 +137,11 @@ def render_jobs_tab():
                 "SELECT "
                 "  SUM(CASE WHEN verdict='GOOD' AND (applied IS NULL OR applied=0) THEN 1 ELSE 0 END) AS good, "
                 "  SUM(CASE WHEN verdict='MAYBE' AND (applied IS NULL OR applied=0) THEN 1 ELSE 0 END) AS maybe, "
-                "  SUM(CASE WHEN verdict='BAD' THEN 1 ELSE 0 END) AS bad, "
+                # Bad = LLM said no; hard-rejects are free keyword kills, shown apart
+                "  SUM(CASE WHEN verdict='BAD' AND reject_reason NOT LIKE 'hard_reject%' THEN 1 ELSE 0 END) AS bad, "
+                "  SUM(CASE WHEN reject_reason LIKE 'hard_reject%' THEN 1 ELSE 0 END) AS hard_rej, "
+                "  SUM(CASE WHEN gemma1_done=1 AND reject_reason NOT LIKE 'hard_reject%' THEN 1 ELSE 0 END) AS judged, "
+                "  SUM(CASE WHEN verdict='QUEUED' THEN 1 ELSE 0 END) AS queued, "
                 "  SUM(CASE WHEN applied=1 THEN 1 ELSE 0 END) AS applied, "
                 "  COUNT(*) AS total "
                 "FROM jobs"
@@ -141,11 +151,14 @@ def render_jobs_tab():
         counts_row.clear()
         with counts_row:
             for val, lbl in [
-                (r["total"] or 0,   "Total"),
-                (r["good"] or 0,    "Good"),
-                (r["maybe"] or 0,   "Maybe"),
-                (r["bad"] or 0,     "Bad"),
-                (r["applied"] or 0, "Applied"),
+                (r["total"] or 0,    "Total"),
+                (r["judged"] or 0,   "Judged (LLM)"),
+                (r["good"] or 0,     "Good"),
+                (r["maybe"] or 0,    "Maybe"),
+                (r["bad"] or 0,      "Bad"),
+                (r["hard_rej"] or 0, "Hard Rej"),
+                (r["queued"] or 0,   "Queued"),
+                (r["applied"] or 0,  "Applied"),
             ]:
                 with ui.element("div").classes("metric").style("flex: 1;"):
                     ui.html(f'<div class="val">{val}</div><div class="lbl">{lbl}</div>')
@@ -170,6 +183,15 @@ def render_jobs_tab():
                     on_change=lambda e: toggle_verdict("MAYBE", e.value))
         ui.checkbox("Bad", value=False,
                     on_change=lambda e: toggle_verdict("BAD", e.value))
+
+        def set_window(e):
+            state["window_days"] = e.value
+            refresh_list()
+
+        ui.select({0: "All time", 1: "Last 24h", 3: "Last 3 days",
+                   7: "Last 7 days", 30: "Last 30 days"},
+                  value=0, label="First seen", on_change=set_window)\
+            .props("outlined dense").style("width: 150px;")
         search_input = ui.input(placeholder="Search title, company, stack, description...")\
             .classes("mono").style("flex: 1; min-width: 240px;")
 
@@ -183,7 +205,8 @@ def render_jobs_tab():
     # ── Job list container ────────────────────────────────────────────────────
     # When new jobs arrive mid-scan, nudge rather than rebuild the list — a
     # rebuild would close any open expansions.
-    list_meta = {"last_count": -1, "last_query": None, "last_verdicts": None}
+    list_meta = {"last_count": -1, "last_query": None, "last_verdicts": None,
+                 "last_window": None}
     list_container = ui.column().classes("w-full").style("padding: 0 16px;")
     refresh_nudge_container = ui.row().classes("w-full")\
         .style("padding: 0 16px; margin-bottom: 8px;")
@@ -193,10 +216,12 @@ def render_jobs_tab():
             return
         list_container.clear()
         refresh_nudge_container.clear()
-        rows = fetch_jobs(state["verdicts"], state["query"])
+        rows = fetch_jobs(state["verdicts"], state["query"],
+                          since_days=state["window_days"])
         list_meta["last_count"] = len(rows)
         list_meta["last_query"] = state["query"]
         list_meta["last_verdicts"] = tuple(state["verdicts"])
+        list_meta["last_window"] = state["window_days"]
         with list_container:
             if not rows:
                 ui.label("No jobs match filters. Run a scan, or widen filters.")\
@@ -212,15 +237,22 @@ def render_jobs_tab():
         if runner_status.read_status()["brain1"]["state"] != "running":
             return
         if (list_meta["last_query"] != state["query"]
-                or list_meta["last_verdicts"] != tuple(state["verdicts"])):
+                or list_meta["last_verdicts"] != tuple(state["verdicts"])
+                or list_meta["last_window"] != state["window_days"]):
             return  # filter changed; user will see new list on next interaction
         conn = get_db_connection()
         try:
             params: list = []
-            sql = "SELECT COUNT(*) FROM jobs WHERE verdict IN ({}) AND (applied IS NULL OR applied = 0)".format(
+            sql = ("SELECT COUNT(*) FROM jobs j LEFT JOIN seen_jobs s ON s.job_key = j.id "
+                   "WHERE verdict IN ({}) AND (applied IS NULL OR applied = 0)").format(
                 ",".join("?" for _ in state["verdicts"])
             )
             params.extend(state["verdicts"])
+            if state["window_days"] > 0:
+                cutoff = (datetime.now(timezone.utc)
+                          - timedelta(days=state["window_days"])).isoformat()
+                sql += " AND COALESCE(s.first_seen_at, j.date_scraped) >= ?"
+                params.append(cutoff)
             current = conn.execute(sql, params).fetchone()[0]
         finally:
             conn.close()
@@ -275,6 +307,21 @@ def _render_notes_and_color(row: dict, refresh_list_fn):
                 swatch.on("click", make_handler())
 
 
+# Expansion open/closed per (job_id, section) — survives list rebuilds, so a
+# manual research/contact refresh doesn't collapse what the user opened.
+_EXPANSION_STATE: dict[tuple, bool] = {}
+# Per-job "show permutation guesses" toggle, default off.
+_SHOW_PATTERN: dict[str, bool] = {}
+
+
+def _sticky_expansion(job_id: str, label: str, key: str):
+    return ui.expansion(
+        label, icon=None,
+        value=_EXPANSION_STATE.get((job_id, key), False),
+        on_value_change=lambda e, k=(job_id, key): _EXPANSION_STATE.__setitem__(k, e.value),
+    )
+
+
 def render_job_row(row: dict, refresh_list_fn):
     row_color = row.get("row_color") or ""
     job_row = ui.element("div").classes("job-row")
@@ -285,9 +332,12 @@ def render_job_row(row: dict, refresh_list_fn):
         with ui.row().style("align-items: flex-start; justify-content: space-between; gap: 12px;"):
             with ui.column().style("gap: 2px; flex: 1; min-width: 0;"):
                 ui.html(f'<div class="job-title">{row.get("title","(no title)")}</div>')
+                date_txt = fmt_ts(row.get("date_posted"), 10)
+                if row.get("date_posted_estimated"):
+                    date_txt = f"~{date_txt}"  # WaaS estimate, not a real date
                 meta_bits = [
                     row.get("company") or "—",
-                    fmt_ts(row.get("date_posted"), 10),
+                    date_txt,
                 ]
                 if row.get("location"):
                     meta_bits.append(row["location"])
@@ -320,7 +370,7 @@ def render_job_row(row: dict, refresh_list_fn):
                 f'{row["reject_reason"]}</div>'
             )
 
-        with ui.expansion("Listing", icon=None).classes("w-full").style("margin-top: 10px;"):
+        with _sticky_expansion(row["id"], "Listing", "listing").classes("w-full").style("margin-top: 10px;"):
             ui.html(
                 f'<div class="desc-scroll">'
                 f'{(row.get("description") or "")[:5000]}'
@@ -334,14 +384,14 @@ def render_job_row(row: dict, refresh_list_fn):
                     f'Open on {row.get("source","listing")} ↗</a></div>'
                 )
 
-        with ui.expansion("Company Intel", icon=None).classes("w-full"):
+        with _sticky_expansion(row["id"], "Company Intel", "intel").classes("w-full"):
             render_company_intel(row, refresh_list_fn)
 
-        with ui.expansion("Similar Past Applications", icon=None).classes("w-full"):
+        with _sticky_expansion(row["id"], "Similar Past Applications", "similar").classes("w-full"):
             render_similar_applications(row)
 
         if row.get("verdict") in ("GOOD", "MAYBE"):
-            with ui.expansion("Contact & Outreach", icon=None).classes("w-full"):
+            with _sticky_expansion(row["id"], "Contact & Outreach", "contact").classes("w-full"):
                 render_contact_section(row, refresh_list_fn)
 
         _render_notes_and_color(row, refresh_list_fn)
@@ -521,7 +571,28 @@ def render_contact_section(row: dict, refresh_list_fn):
     except (json.JSONDecodeError, TypeError):
         contacts = []
 
-    if contacts:
+    # Pure permutation entries (founder@/hello@ guesses, no real name) are
+    # hidden by default — real names with a guessed email stay, marked red.
+    job_id = row["id"]
+    show_pattern = _SHOW_PATTERN.get(job_id, False)
+    n_pattern = sum(1 for c in contacts if c.get("source") == "permutation")
+    if n_pattern:
+        def _toggle_pattern(e, jid=job_id):
+            _SHOW_PATTERN[jid] = e.value
+            try:
+                refresh_list_fn()
+            except RuntimeError:
+                pass
+        ui.switch(f"Show permutation guesses ({n_pattern})",
+                  value=show_pattern, on_change=_toggle_pattern)\
+            .props("dense size=xs").style("font-size: 12px; margin-bottom: 4px;")
+    # keep ORIGINAL indices — find_emails_for_contacts addresses the stored list
+    visible = [(i, c) for i, c in enumerate(contacts)
+               if show_pattern or c.get("source") != "permutation"]
+    # pure guesses always sink to the bottom (stable: real contacts keep order)
+    visible.sort(key=lambda ic: ic[1].get("source") == "permutation")
+
+    if visible:
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 6px;">'
             'Real contacts found &mdash; click a card to pick one, or tick people '
@@ -537,7 +608,7 @@ def render_contact_section(row: dict, refresh_list_fn):
                 el.style("border: 1px solid var(--accent);")
             return _pick
 
-        for idx, c in enumerate(contacts):
+        for idx, c in visible:
             name = _esc(c.get("name")) or "unknown"
             title = _esc(c.get("title")) or "—"
             conf = _esc(c.get("confidence")) or "—"
@@ -547,7 +618,10 @@ def render_contact_section(row: dict, refresh_list_fn):
             has_email = bool((c.get("email") or "").strip())
             email = _esc(c.get("email"))
             # Green = found/corroborated; red = pattern/permutation guess (may bounce).
-            email_color = "var(--bad)" if c.get("confidence") == "pattern" else "var(--good)"
+            is_pattern = c.get("confidence") == "pattern"
+            email_color = "var(--bad)" if is_pattern else "var(--good)"
+            # the "(pattern via ...)" tag inherits the warning color too
+            conf_color = "var(--bad)" if is_pattern else "var(--text-faint)"
             card_style = (
                 "padding: 6px 8px; border-radius: 6px; margin-bottom: 4px; "
             )
@@ -565,7 +639,7 @@ def render_contact_section(row: dict, refresh_list_fn):
                             ui.html(
                                 f'<div style="font-size: 13.5px;"><strong>{name}</strong> &mdash; {title}</div>'
                                 f'<div class="mono" style="font-size: 12px; color: {email_color};">'
-                                f'{email} <span style="color: var(--text-faint);">'
+                                f'{email} <span style="color: {conf_color};">'
                                 f'({conf} via {src})</span></div>'
                             )
                         else:

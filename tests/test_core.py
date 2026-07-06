@@ -13,6 +13,7 @@ Run from the repo root:
 """
 
 import json
+from datetime import datetime, timezone
 import time
 
 import pytest
@@ -416,12 +417,13 @@ class TestFindSimilarApplications:
         assert embeddings.get_embedding(conn, "j1") == [0.0, 1.0, 0.0]
 
 
-# ── YC fallback id: distinct postings must not collide on one id ──────────────
-# YC listings have no native id, so brain1 derives one. company+title+date is
-# NOT unique (same role listed for several locations -> identical on all three),
-# so the id must also fold in job_url to stay collision-free yet stable.
+# ── YC fallback id: distinct postings must not collide, ids must not drift ────
+# YC listings have no native id, so brain1 derives one from company+title+url
+# hash. date_posted is deliberately EXCLUDED: WaaS dates are scrape-time
+# estimates that shift daily, and an id embedding them re-judges the same job
+# on every scan.
 class TestFallbackJobId:
-    def test_distinct_postings_same_company_title_date_dont_collide(self):
+    def test_distinct_postings_same_company_title_dont_collide(self):
         a = {"company": "Acme", "title": "Engineer", "date_posted": "2026-05-30",
              "job_url": "https://jobs.example.com/acme/eng-sf"}
         b = {"company": "Acme", "title": "Engineer", "date_posted": "2026-05-30",
@@ -432,6 +434,14 @@ class TestFallbackJobId:
         row = {"company": "Acme", "title": "Engineer", "date_posted": "2026-05-30",
                "job_url": "https://jobs.example.com/acme/eng-sf"}
         assert brain1.fallback_job_id(row) == brain1.fallback_job_id(dict(row))
+
+    def test_shifting_estimated_date_does_not_change_id(self):
+        # The WaaS re-judge leak: "5 months" → now()-based date that moves every
+        # day. Same posting scraped on consecutive days must keep one id.
+        day1 = {"company": "Acme", "title": "Engineer", "date_posted": "2026-01-01",
+                "job_url": "https://www.ycombinator.com/companies/acme/jobs/x1"}
+        day2 = {**day1, "date_posted": "2026-01-02"}
+        assert brain1.fallback_job_id(day1) == brain1.fallback_job_id(day2)
 
     def test_no_url_falls_back_to_company_title_date(self):
         row = {"company": "Acme", "title": "Engineer", "date_posted": "2026-05-30",
@@ -458,3 +468,53 @@ class TestSourceSelection:
     def test_linkedin_and_yc_both_run(self):
         assert brain1.jobspy_enabled(["linkedin"]) is True
         assert brain1.has_scrape_source(["linkedin"], True) is True
+
+
+# ── freshness window: real dates filter, estimated dates pass through ─────────
+class TestDateFilter:
+    NOW = datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc)
+
+    def _run(self, rows, hours):
+        return brain1.apply_yc_date_filter(rows, hours, now=self.NOW,
+                                           return_stats=True)
+
+    def test_estimated_dates_bypass_the_window(self):
+        # WaaS dates are fabricated — the ledger/cap govern them, not the window.
+        rows = [{"date_posted": "2024-01-01", "date_posted_estimated": 1}]
+        kept, stale, undated = self._run(rows, 72)
+        assert kept == rows and stale == 0
+
+    def test_real_stale_date_dropped(self):
+        rows = [{"date_posted": "2026-01-01"}]
+        kept, stale, undated = self._run(rows, 72)
+        assert kept == [] and stale == 1
+
+    def test_day_granular_inclusive_at_boundary(self):
+        # cutoff is 2026-07-02 12:00; a bare date on the cutoff day stays.
+        rows = [{"date_posted": "2026-07-02"}]
+        kept, _, _ = self._run(rows, 72)
+        assert kept == rows
+
+    def test_hn_full_timestamp_compares_at_hour_precision(self):
+        just_in = {"date_posted": "2026-07-02T13:00:00+00:00"}   # 71h old
+        too_old = {"date_posted": "2026-07-02T11:00:00+00:00"}   # 73h old
+        kept, stale, _ = self._run([just_in, too_old], 72)
+        assert kept == [just_in] and stale == 1
+
+    def test_undated_rows_dropped(self):
+        kept, _, undated = self._run([{"date_posted": ""}], 72)
+        assert kept == [] and undated == 1
+
+    def test_zero_hours_disables(self):
+        rows = [{"date_posted": "2020-01-01"}]
+        assert brain1.apply_yc_date_filter(rows, 0) == rows
+
+
+class TestYcEstimatedFlag:
+    def test_waas_rows_flagged_ats_rows_not(self):
+        rows = brain1.yc_jobs_to_rows([
+            {"title": "A", "ats": "waas", "date_posted": "2026-06-01"},
+            {"title": "B", "ats": "greenhouse", "date_posted": "2026-06-01"},
+        ])
+        assert rows[0]["date_posted_estimated"] == 1
+        assert rows[1]["date_posted_estimated"] == 0

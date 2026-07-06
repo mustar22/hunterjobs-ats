@@ -6,6 +6,7 @@ db/
 *.db
 *.db-wal
 *.db-shm
+*.bak
 hunterjobs.log
 *.log
 runner_status.json
@@ -31,6 +32,10 @@ venv/
 
 # tooling
 .claude/
+
+# private planning docs — never push
+TODO.md
+planofintegration.md
 
 # editors / OS
 .idea/

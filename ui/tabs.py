@@ -324,6 +324,7 @@ def render_market_tab():
                     "  SUM(CASE WHEN verdict='MAYBE' THEN 1 ELSE 0 END) AS maybe, "
                     "  SUM(CASE WHEN verdict='BAD' AND reject_reason NOT LIKE 'hard_reject%' THEN 1 ELSE 0 END) AS bad, "
                     "  SUM(CASE WHEN reject_reason LIKE 'hard_reject%' THEN 1 ELSE 0 END) AS hr, "
+                    "  SUM(CASE WHEN verdict='QUEUED' THEN 1 ELSE 0 END) AS queued, "
                     "  SUM(CASE WHEN hiring_signal='ghost' THEN 1 ELSE 0 END) AS ghost, "
                     "  COUNT(*) AS total "
                     "FROM jobs WHERE date_scraped >= ?",
@@ -339,6 +340,7 @@ def render_market_tab():
                     (r["maybe"] or 0, "Maybe"),
                     (r["bad"] or 0,   "Bad"),
                     (r["hr"] or 0,    "Hard Rej"),
+                    (r["queued"] or 0, "Queued"),
                     (r["ghost"] or 0, "Ghost"),
                 ]:
                     with ui.element("div").classes("metric").style("flex: 1;"):
@@ -1017,6 +1019,14 @@ def render_setup_tab():
             ho_in = ui.number(label="Max hours old",
                               value=cfg["hours_old"], step=12, min=12)\
                 .props("outlined").style("width: 180px;")
+            cap_in = ui.number(label="LLM jobs per scan (0 = no cap)",
+                               value=cfg.get("max_llm_jobs_per_scan", 100),
+                               step=10, min=0)\
+                .props("outlined").style("width: 220px;")
+            expire_in = ui.number(label="Mark listing dead after N days unseen (0 = never)",
+                                  value=cfg.get("ledger_expire_days", 60),
+                                  step=10, min=0)\
+                .props("outlined").style("width: 220px;")
 
         ui.html('<div class="section-title">Sources</div>')
         sources_set = set(cfg["sources"])
@@ -1239,6 +1249,9 @@ def render_setup_tab():
                 "salary_floor": int(floor_in.value or 0),
                 "results_wanted": int(rw_in.value or 100),
                 "hours_old": int(ho_in.value or 72),
+                # `or 0` not 100: 0 is a legit "no cap" choice here
+                "max_llm_jobs_per_scan": int(cap_in.value or 0),
+                "ledger_expire_days": int(expire_in.value or 0),
                 "use_rag": bool(rag_cb.value),
                 # Save the actual ticked list — an empty list is allowed (YC-only run).
                 # Do NOT coerce back to ["linkedin"]; that silently forces LinkedIn on.
@@ -1371,6 +1384,9 @@ def render_setup_tab():
                             conn.execute("DELETE FROM jobs")
                             conn.execute("DELETE FROM market_snapshots")
                             conn.execute("DELETE FROM jobs_fts")
+                            # ledger goes with the jobs — stale first_seen would
+                            # ghost-hide rescraped jobs from the window filter
+                            conn.execute("DELETE FROM seen_jobs")
                             if database.RAG_AVAILABLE:
                                 conn.execute("DELETE FROM job_embeddings")
                             # brain2_messages is intentionally left alone — chat

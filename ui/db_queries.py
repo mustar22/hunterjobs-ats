@@ -8,28 +8,42 @@ the schema/connection. These all go through core.database.get_db_connection.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.database import get_db_connection
 
+# When WE first saw the job (ledger) — the only honest "how new" there is;
+# date_posted can be a WaaS estimate. Fallback for pre-ledger rows.
+_FIRST_SEEN = "COALESCE(s.first_seen_at, j.date_scraped)"
 
-def fetch_jobs(verdicts: list[str], query: str = "", limit: int = 300) -> list[dict]:
+
+def fetch_jobs(verdicts: list[str], query: str = "", limit: int = 300,
+               since_days: int = 0) -> list[dict]:
+    """Newest-first by first_seen_at. since_days > 0 = only jobs first seen
+    within that window."""
     if not verdicts:
         return []
     conn = get_db_connection()
     try:
         params: list = []
         if query.strip():
-            sql = "SELECT j.* FROM jobs j JOIN jobs_fts f ON j.rowid = f.rowid WHERE "
+            sql = ("SELECT j.* FROM jobs j JOIN jobs_fts f ON j.rowid = f.rowid "
+                   "LEFT JOIN seen_jobs s ON s.job_key = j.id WHERE ")
             safe_q = query.replace('"', '""')
             sql += "jobs_fts MATCH ? AND "
             params.append(f'"{safe_q}"*')
         else:
-            sql = "SELECT * FROM jobs WHERE "
+            sql = ("SELECT j.* FROM jobs j "
+                   "LEFT JOIN seen_jobs s ON s.job_key = j.id WHERE ")
         placeholders = ",".join("?" for _ in verdicts)
         sql += f"verdict IN ({placeholders}) AND (applied IS NULL OR applied = 0) "
-        sql += "ORDER BY date_scraped DESC LIMIT ?"
         params.extend(verdicts)
+        if since_days > 0:
+            cutoff = (datetime.now(timezone.utc)
+                      - timedelta(days=since_days)).isoformat()
+            sql += f"AND {_FIRST_SEEN} >= ? "
+            params.append(cutoff)
+        sql += f"ORDER BY {_FIRST_SEEN} DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
