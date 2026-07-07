@@ -36,7 +36,8 @@ def render_jobs_tab():
     state = {
         "verdicts": ["GOOD", "MAYBE"],
         "query": "",
-        "window_days": 0,  # 0 = all time; filters on ledger first_seen_at
+        "window_days": 0,   # 0 = all time; filters on ledger first_seen_at
+        "sort": "found",    # found = first_seen_at | posted = date_posted
     }
 
     # ── Top row: scan button + live status ────────────────────────────────────
@@ -192,6 +193,14 @@ def render_jobs_tab():
                    7: "Last 7 days", 30: "Last 30 days"},
                   value=0, label="First seen", on_change=set_window)\
             .props("outlined dense").style("width: 150px;")
+
+        def set_sort(e):
+            state["sort"] = e.value
+            refresh_list()
+
+        ui.select({"found": "Newest found", "posted": "Newest posted"},
+                  value="found", label="Sort", on_change=set_sort)\
+            .props("outlined dense").style("width: 150px;")
         search_input = ui.input(placeholder="Search title, company, stack, description...")\
             .classes("mono").style("flex: 1; min-width: 240px;")
 
@@ -217,7 +226,8 @@ def render_jobs_tab():
         list_container.clear()
         refresh_nudge_container.clear()
         rows = fetch_jobs(state["verdicts"], state["query"],
-                          since_days=state["window_days"])
+                          since_days=state["window_days"],
+                          sort=state["sort"])
         list_meta["last_count"] = len(rows)
         list_meta["last_query"] = state["query"]
         list_meta["last_verdicts"] = tuple(state["verdicts"])
@@ -463,6 +473,22 @@ def render_company_intel(row: dict, refresh_list_fn):
             ui.html(
                 f'<div style="margin-top: 8px; font-size: 12px; color: var(--maybe);">'
                 f'⚠ {" · ".join(flags)}</div>'
+            )
+        # trust receipts: the exact pages this intel was read from
+        try:
+            srcs = json.loads(row.get("intel_sources") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            srcs = []
+        if srcs:
+            links = " · ".join(
+                f'<a href="{s["url"]}" target="_blank" '
+                f'style="color: var(--accent); text-decoration: none;">'
+                f'{_esc(s.get("label") or "source")} ↗</a>'
+                for s in srcs if s.get("url")
+            )
+            ui.html(
+                f'<div style="margin-top: 8px; font-size: 12px; '
+                f'color: var(--text-dim);">read from: {links}</div>'
             )
     else:
         # MAYBE or GOOD-where-Stage-2-failed

@@ -120,23 +120,25 @@ def _fetch_ok(text: str) -> bool:
 
 
 def gather_site_content(company: str, domain: str,
-                        client=None, model=None, backend=None) -> tuple[str, str]:
-    """Best available company text: homepage → /about → ddgs snippets.
-    Never returns a raw '(fetch failed: ...)' string as content."""
+                        client=None, model=None, backend=None) -> tuple[str, str, list[str]]:
+    """Best available company text: homepage → /about → search snippets.
+    Returns (text, tag, source_urls). Never feeds a raw '(fetch failed: ...)'
+    string to the model."""
     cdomain = b1.clean_domain(domain)
     if cdomain:
         text = b1.scrape_markdown(cdomain)
         if _fetch_ok(text):
-            return text, "website"
+            return text, "website", [f"https://{cdomain}"]
         text = b1.scrape_markdown(f"{cdomain}/about")
         if _fetch_ok(text):
-            return text, "website"
+            return text, "website", [f"https://{cdomain}/about"]
     # last resort: search snippets, so the model judges SOMETHING real
     from core import websearch
-    snippets = websearch.snippets_text(websearch.search(f'"{company}" company'))
+    results = websearch.search(f'"{company}" company')
+    snippets = websearch.snippets_text(results)
     if snippets:
-        return snippets, "search"
-    return "", "none"
+        return snippets, "search", [r["url"] for r in results if r.get("url")][:3]
+    return "", "none", []
 
 
 def crawl_team_contacts(domain: str, company: str, limit: int = 8) -> list[dict]:
@@ -266,12 +268,22 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
             "confidence": ("verified" if g.get("email") else "reported"),
         } for g in b1.github_contacts(company, keys.get("github", ""), domain)]
 
+    # trust receipts: every URL the research actually read
+    sources: list[dict] = []
+    if yc:
+        sources.append({"label": "YC profile",
+                        "url": f"https://www.ycombinator.com/companies/{yc_slug}"})
+
     # research inputs + the one LLM call
     if cached and not force:
         # fresh research already cached; we only owed the hunt
         result = dict(cached)
+        sources = (cached.get("sources") or []) or sources
     else:
-        site_text, site_tag = gather_site_content(company, domain, client, model, backend)
+        site_text, site_tag, site_urls = gather_site_content(company, domain,
+                                                             client, model, backend)
+        label = "Company site" if site_tag == "website" else "Web search"
+        sources += [{"label": label, "url": u} for u in site_urls]
         prompt = _build_prompt(company, domain, yc, site_text, site_tag)
         llm_people: list[dict] = []
         try:
@@ -337,6 +349,7 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
     out = {
         "name": company, "domain": cdomain, "yc_slug": yc_slug or "",
         "contacts": merged,
+        "sources": sources,
         "hunted": bool(hunted or (cached or {}).get("hunted")),
         "researched_at": datetime.now(timezone.utc).isoformat(),
         "from_cache": False,

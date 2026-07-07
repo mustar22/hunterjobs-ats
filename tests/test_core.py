@@ -518,3 +518,34 @@ class TestYcEstimatedFlag:
         ])
         assert rows[0]["date_posted_estimated"] == 1
         assert rows[1]["date_posted_estimated"] == 0
+
+
+# ── fetch_jobs sort: newest found vs newest posted ─────────────────────────────
+class TestFetchJobsSort:
+    def _conn(self, monkeypatch, tmp_path):
+        import core.database as database
+        import ui.db_queries as q
+        monkeypatch.setattr(database, "DB_PATH", tmp_path / "s.db")
+        database.init_db()
+        conn = database.get_db_connection()
+        rows = [("a", "2026-01-01", "2026-07-01T00:00:00+00:00"),
+                ("b", "2026-06-01", "2026-07-03T00:00:00+00:00"),
+                ("c", "",           "2026-07-02T00:00:00+00:00")]
+        for jid, posted, seen in rows:
+            conn.execute("INSERT INTO jobs (id, title, verdict, date_posted, "
+                         "date_scraped) VALUES (?, ?, 'GOOD', ?, ?)",
+                         (jid, jid, posted, seen))
+            conn.execute("INSERT INTO seen_jobs (job_key, first_seen_at, "
+                         "last_seen_at) VALUES (?, ?, ?)", (jid, seen, seen))
+        conn.commit()
+        conn.close()
+        return q
+
+    def test_newest_found_default(self, monkeypatch, tmp_path):
+        q = self._conn(monkeypatch, tmp_path)
+        assert [r["id"] for r in q.fetch_jobs(["GOOD"])] == ["b", "c", "a"]
+
+    def test_newest_posted_undated_last(self, monkeypatch, tmp_path):
+        q = self._conn(monkeypatch, tmp_path)
+        got = [r["id"] for r in q.fetch_jobs(["GOOD"], sort="posted")]
+        assert got == ["b", "a", "c"]

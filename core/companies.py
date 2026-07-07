@@ -47,7 +47,7 @@ def get_cached(conn: sqlite3.Connection, key: str,
         if (row["researched_at"] or "") < cutoff:
             return None
     d = dict(row)
-    for f in ("real_stack", "culture_flags", "contacts"):
+    for f in ("real_stack", "culture_flags", "contacts", "sources"):
         try:
             d[f] = json.loads(d.get(f) or "[]")
         except (json.JSONDecodeError, TypeError):
@@ -64,8 +64,8 @@ def save(conn: sqlite3.Connection, key: str, data: dict) -> None:
         INSERT OR REPLACE INTO companies (
             company_key, name, domain, yc_slug,
             company_summary, hiring_signal, real_stack, culture_flags,
-            company_size, contacts, hunted, researched_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            company_size, contacts, sources, hunted, researched_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             key,
@@ -78,6 +78,7 @@ def save(conn: sqlite3.Connection, key: str, data: dict) -> None:
             json.dumps(data.get("culture_flags") or []),
             data.get("company_size") or "",
             json.dumps(data.get("contacts") or []),
+            json.dumps(data.get("sources") or []),
             1 if data.get("hunted") else 0,
             data.get("researched_at") or datetime.now(timezone.utc).isoformat(),
         ),

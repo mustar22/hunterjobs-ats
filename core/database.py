@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS companies (
     culture_flags   TEXT,               -- JSON list
     company_size    TEXT,
     contacts        TEXT,               -- JSON list of contact dicts
+    sources         TEXT DEFAULT '',    -- JSON [{label,url}] — what we actually read
     hunted          INTEGER DEFAULT 0,  -- 1 = full contact hunt was performed
     researched_at   TEXT
 );
@@ -262,9 +263,16 @@ def init_db() -> None:
         ("contacts",  "TEXT DEFAULT ''"),
         ("date_posted_estimated", "INTEGER DEFAULT 0"),
         ("yc_slug", "TEXT DEFAULT ''"),
+        ("intel_sources", "TEXT DEFAULT ''"),
     ]:
         if col not in existing_cols:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_def}")
+
+    # same lightweight migration for companies (younger table, same idea)
+    c.execute("PRAGMA table_info(companies)")
+    comp_cols = {row[1] for row in c.fetchall()}
+    if "sources" not in comp_cols:
+        c.execute("ALTER TABLE companies ADD COLUMN sources TEXT DEFAULT ''")
 
     conn.commit()
     conn.close()

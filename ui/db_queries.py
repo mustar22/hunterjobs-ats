@@ -18,8 +18,9 @@ _FIRST_SEEN = "COALESCE(s.first_seen_at, j.date_scraped)"
 
 
 def fetch_jobs(verdicts: list[str], query: str = "", limit: int = 300,
-               since_days: int = 0) -> list[dict]:
-    """Newest-first by first_seen_at. since_days > 0 = only jobs first seen
+               since_days: int = 0, sort: str = "found") -> list[dict]:
+    """Newest-first by first_seen_at (sort='found') or by date_posted
+    (sort='posted'; undated rows sink). since_days > 0 = only jobs first seen
     within that window."""
     if not verdicts:
         return []
@@ -43,7 +44,12 @@ def fetch_jobs(verdicts: list[str], query: str = "", limit: int = 300,
                       - timedelta(days=since_days)).isoformat()
             sql += f"AND {_FIRST_SEEN} >= ? "
             params.append(cutoff)
-        sql += f"ORDER BY {_FIRST_SEEN} DESC LIMIT ?"
+        if sort == "posted":
+            # ISO strings sort lexically; ''/NULL posted dates go last
+            sql += ("ORDER BY (COALESCE(j.date_posted, '') = '') ASC, "
+                    "j.date_posted DESC LIMIT ?")
+        else:
+            sql += f"ORDER BY {_FIRST_SEEN} DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]

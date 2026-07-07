@@ -113,7 +113,8 @@ def stubbed(monkeypatch):
     monkeypatch.setattr(b1, "call_gemma", fake_llm)
     monkeypatch.setattr(enrich, "gather_site_content",
                         lambda *a, **k: (calls.__setitem__("site", calls["site"] + 1)
-                                         or ("site text " * 50, "website")))
+                                         or ("site text " * 50, "website",
+                                             ["https://acme.dev"])))
     monkeypatch.setattr(enrich, "crawl_team_contacts",
                         lambda *a, **k: (calls.__setitem__("team", calls["team"] + 1) or []))
     monkeypatch.setattr(b1, "github_contacts",
@@ -208,3 +209,16 @@ class TestPrecisionGuards:
         assert not b1._is_real_person_name("Technical Expertise")
         assert not b1._is_real_person_name("Customer Success")
         assert b1._is_real_person_name("Ann Chan")
+
+
+class TestSources:
+    def test_sources_recorded_and_cached(self, conn, stubbed):
+        e = enrich.enrich_company(conn, {"company_ttl_days": 30},
+                                  "Acme", "https://acme.dev", yc_slug="acme")
+        labels = {s["label"] for s in e["sources"]}
+        assert labels == {"YC profile", "Company site"}
+        assert any("ycombinator.com/companies/acme" in s["url"] for s in e["sources"])
+        # cache round-trip keeps them
+        e2 = enrich.enrich_company(conn, {"company_ttl_days": 30},
+                                   "Acme", "https://acme.dev", yc_slug="acme")
+        assert e2["from_cache"] and e2["sources"] == e["sources"]

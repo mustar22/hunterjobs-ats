@@ -984,7 +984,8 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
     conn.commit()
 
 
-def update_job_research(conn, job_id: str, r: CompanyResearch) -> None:
+def update_job_research(conn, job_id: str, r: CompanyResearch,
+                        sources: list[dict] | None = None) -> None:
     conn.execute(
         """
         UPDATE jobs SET
@@ -993,6 +994,7 @@ def update_job_research(conn, job_id: str, r: CompanyResearch) -> None:
             real_stack      = ?,
             culture_flags   = ?,
             company_size    = ?,
+            intel_sources   = ?,
             gemma2_done     = 1
         WHERE id = ?
         """,
@@ -1002,6 +1004,7 @@ def update_job_research(conn, job_id: str, r: CompanyResearch) -> None:
             json.dumps(r.real_stack),
             json.dumps(r.culture_flags),
             r.company_size,
+            json.dumps(sources or []),
             job_id,
         ),
     )
@@ -1583,7 +1586,8 @@ def run_brain1() -> None:
                         culture_flags=e["culture_flags"],
                         company_size=e["company_size"],
                     )
-                    update_job_research(conn, job["id"], research)
+                    update_job_research(conn, job["id"], research,
+                                        sources=e.get("sources"))
                     job["company_summary"] = research.company_summary
                     contacts = _merge_contacts([baked, e["contacts"]])
                     update_job_outreach(conn, job["id"], contacts)
@@ -1684,7 +1688,7 @@ def _manual_enrich(job_id: str, stage_label: str):
                 culture_flags=e["culture_flags"],
                 company_size=e["company_size"],
             )
-            update_job_research(conn, job_id, r)
+            update_job_research(conn, job_id, r, sources=e.get("sources"))
             contacts = _merge_contacts([baked, e["contacts"]])
             update_job_outreach(conn, job_id, contacts)
 
