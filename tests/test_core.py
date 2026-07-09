@@ -549,3 +549,66 @@ class TestFetchJobsSort:
         q = self._conn(monkeypatch, tmp_path)
         got = [r["id"] for r in q.fetch_jobs(["GOOD"], sort="posted")]
         assert got == ["b", "a", "c"]
+
+
+# ── v0.7: judged listing facts + rewritable evaluation brief ──────────────────
+class TestJudgeV07:
+    def test_jobfilter_new_fields_default(self):
+        from core.schemas import JobFilter
+        f = JobFilter(verdict="GOOD")
+        assert f.work_mode == "unknown" and f.us_auth_required == "unclear"
+
+    def test_jobfilter_rejects_offgrid_values(self):
+        import pytest
+        from pydantic import ValidationError
+        from core.schemas import JobFilter
+        with pytest.raises(ValidationError):
+            JobFilter(verdict="GOOD", work_mode="maybe-remote")
+
+    def test_migration_adds_v07_columns(self, tmp_path, monkeypatch):
+        import core.database as database
+        monkeypatch.setattr(database, "DB_PATH", tmp_path / "t.db")
+        database.init_db()
+        import sqlite3
+        conn = sqlite3.connect(tmp_path / "t.db")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        assert {"work_mode", "us_auth_required"} <= cols
+        conn.close()
+
+    def _capture_system(self, monkeypatch):
+        import pipeline.brain1 as b1
+        captured = {}
+        def fake_call(client, model, backend, system, prompt, schema, **kw):
+            captured["system"] = system
+            captured["prompt"] = prompt
+            from core.schemas import JobFilter
+            return JobFilter(verdict="MAYBE")
+        monkeypatch.setattr(b1, "call_gemma", fake_call)
+        return b1, captured
+
+    def test_default_brief_and_contract_present(self, monkeypatch):
+        b1, cap = self._capture_system(monkeypatch)
+        b1.gemma1_filter(None, "m", "stub", "desc " * 30, "ml engineer")
+        assert b1.DEFAULT_JUDGE_PROMPT in cap["system"]
+        assert "OUTPUT CONTRACT" in cap["system"]
+        assert "CANDIDATE PROFILE" in cap["system"]
+
+    def test_custom_brief_replaces_default_contract_stays(self, monkeypatch):
+        b1, cap = self._capture_system(monkeypatch)
+        b1.gemma1_filter(None, "m", "stub", "desc " * 30, "",
+                         judge_prompt="GOOD if the listing states a salary.")
+        assert "GOOD if the listing states a salary." in cap["system"]
+        assert b1.DEFAULT_JUDGE_PROMPT not in cap["system"]
+        assert "OUTPUT CONTRACT" in cap["system"]
+        # no profile given → no profile block in the prompt at all
+        assert "CANDIDATE PROFILE" not in cap["system"]
+
+    def test_anthropic_stage1_client_selection(self):
+        import pipeline.brain1 as b1
+        client, model, backend = b1.get_gemma_client_for_stage(
+            {"brain1_stage1_backend": "anthropic",
+             "brain1_anthropic_model": "claude-haiku-4-5"},
+            {"google": "", "anthropic": "k", "openrouter": ""},
+            "stage1")
+        assert backend == "anthropic" and model == "claude-haiku-4-5"
+        assert type(client).__name__ == "Anthropic"

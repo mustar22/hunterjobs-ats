@@ -150,6 +150,11 @@ def get_gemma_client_for_stage(cfg: dict, keys: dict, stage_group: str):
             "openrouter",
         )
 
+    if backend == "anthropic":
+        import anthropic  # lazy, same as brain2 — optional dep
+        model_name = (cfg.get("brain1_anthropic_model") or "claude-haiku-4-5").strip()
+        return anthropic.Anthropic(api_key=keys.get("anthropic", "")), model_name, "anthropic"
+
     # legacy 'stage23' resolves to the stage-2 model field.
     model_key = "stage2" if stage_group == "stage23" else stage_group
     model_name = (cfg.get(f"brain1_{model_key}_gemma_model") or DEFAULT_GEMMA_MODEL).strip()
@@ -783,6 +788,24 @@ def call_gemma(
 
     for attempt in range(1, max_attempts + 1):
         try:
+            if backend == "anthropic":
+                def _call_anthropic():
+                    # structured outputs: parse() validates against the schema
+                    response = client.messages.parse(
+                        model=model,
+                        max_tokens=max_output_tokens,
+                        system=system,
+                        messages=[{"role": "user", "content": prompt}],
+                        output_format=schema,
+                        timeout=per_call_timeout,
+                    )
+                    if response.parsed_output is not None:
+                        return response.parsed_output
+                    raw = next((b.text for b in response.content
+                                if b.type == "text"), "")
+                    return _parse_or_salvage(raw, schema)
+                return _run_with_timeout(_call_anthropic, per_call_timeout + 5)
+
             if backend in ("lmstudio", "openrouter"):
                 def _call_lmstudio():
                     response = client.chat.completions.create(
@@ -860,16 +883,39 @@ def call_gemma(
 
 
 # ── Gemma #1 / #2 / #3 ────────────────────────────────────────────────────────
+# The rewritable brief: what the evaluator is actually hunting for. Users may
+# replace it wholesale — HJ is a listing analyzer, job filtering is just the
+# default mission. Kept as a constant so "Restore default" has a source of truth.
+DEFAULT_JUDGE_PROMPT = (
+    "You are a strict job filter working for the candidate described in the "
+    "CANDIDATE PROFILE. GOOD if the listing is a strong match for them, MAYBE "
+    "if uncertain but possible, BAD if it clearly doesn't fit."
+)
+
+# Not user-editable — goal-agnostic frame + the fields the schema depends on.
+_JUDGE_CONTRACT = (
+    "You evaluate listings one at a time. Your evaluation goal and criteria "
+    "are defined in the EVALUATION BRIEF below — follow it exactly.\n\n"
+    "OUTPUT CONTRACT (always applies, regardless of the brief): verdict must "
+    "be GOOD, MAYBE or BAD. For BAD, give a brief reject_reason (under 15 "
+    "words); for GOOD/MAYBE leave it empty. Also report two facts read from "
+    "the LISTING text alone: work_mode — remote/hybrid/onsite as the listing "
+    "states it, unknown if it doesn't say; us_auth_required — yes if it "
+    "demands US work authorization, citizenship, security clearance or W-2, "
+    "no if explicitly open to anyone, unclear otherwise."
+)
+
+
 def gemma1_filter(client, model, backend, description: str, profile: str,
                   location: str = "", is_remote=None, source: str = "",
-                  geo_eligibility: str = "", visa: str = "") -> JobFilter:
+                  geo_eligibility: str = "", visa: str = "",
+                  judge_prompt: str = "") -> JobFilter:
     system = (
-        "You are a strict job filter. Evaluate this listing against the candidate "
-        "profile below. Return GOOD if it's a strong match, MAYBE if uncertain but "
-        "possible, BAD if it clearly doesn't fit. For BAD, give a brief reject_reason "
-        "(under 15 words). For GOOD/MAYBE, leave reject_reason empty.\n\n"
-        f"CANDIDATE PROFILE:\n{profile or '(no profile provided)'}"
+        f"{_JUDGE_CONTRACT}\n\n"
+        f"EVALUATION BRIEF:\n{(judge_prompt or '').strip() or DEFAULT_JUDGE_PROMPT}"
     )
+    if (profile or "").strip():
+        system += f"\n\nCANDIDATE PROFILE:\n{profile.strip()}"
     # Geo rule is a no-op unless the candidate has declared eligibility constraints.
     if (geo_eligibility or "").strip():
         system += (
@@ -951,7 +997,8 @@ JOB_INSERT_COLS = (
 
 
 def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
-                            judged: bool = True) -> None:
+                            judged: bool = True, work_mode: str = "unknown",
+                            us_auth_required: str = "unclear") -> None:
     """judged=False = QUEUED path: stored in full but gemma1_done stays 0."""
     params = {c: job.get(c) for c in JOB_INSERT_COLS}
     params["date_posted_estimated"] = int(params.get("date_posted_estimated") or 0)
@@ -964,6 +1011,7 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
             description, date_posted, date_scraped, description_hash,
             date_posted_estimated, yc_slug,
             verdict, reject_reason, gemma1_done,
+            work_mode, us_auth_required,
             company_summary, hiring_signal, real_stack, culture_flags, company_size,
             gemma2_done, gemma3_done,
             applied, applied_date
@@ -973,13 +1021,15 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
             :description, :date_posted, :date_scraped, :description_hash,
             :date_posted_estimated, :yc_slug,
             :verdict, :reject_reason, :gemma1_done,
+            :work_mode, :us_auth_required,
             NULL, 'uncertain', '[]', '[]', 'tiny',
             0, 0,
             0, NULL
         )
         """,
         {**params, "verdict": verdict, "reject_reason": reject_reason,
-         "gemma1_done": 1 if judged else 0},
+         "gemma1_done": 1 if judged else 0,
+         "work_mode": work_mode, "us_auth_required": us_auth_required},
     )
     conn.commit()
 
@@ -1342,8 +1392,11 @@ def run_brain1() -> None:
                                job["description"], profile_text,
                                location=job["location"], is_remote=is_remote,
                                source=job["source"], geo_eligibility=geo_text,
-                               visa=visa)
-            insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason)
+                               visa=visa,
+                               judge_prompt=cfg.get("judge_prompt", ""))
+            insert_job_with_verdict(conn, job, g1.verdict, g1.reject_reason,
+                                    work_mode=g1.work_mode,
+                                    us_auth_required=g1.us_auth_required)
             log.info(f"[stage1] {g1.verdict:5s} {job['title']} @ {job['company']}")
             # Best-effort embed-on-scrape for RAG; a failed embed must never fail the scrape.
             if use_rag:

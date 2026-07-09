@@ -357,6 +357,13 @@ def render_job_row(row: dict, refresh_list_fn):
                     meta_bits.append(
                         f'{sal_min or "?"}–{sal_max or "?"} {row.get("currency") or ""}'
                     )
+                # v0.7: read from the listing by the judge, not keyword-matched
+                wm = row.get("work_mode") or "unknown"
+                if wm != "unknown":
+                    meta_bits.append(wm)
+                if row.get("us_auth_required") == "yes":
+                    meta_bits.append(
+                        '<span style="color: var(--bad);">US-auth required</span>')
                 ui.html(
                     f'<div class="job-meta">{" · ".join(str(b) for b in meta_bits)}</div>'
                 )

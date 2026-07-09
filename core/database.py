@@ -264,6 +264,9 @@ def init_db() -> None:
         ("date_posted_estimated", "INTEGER DEFAULT 0"),
         ("yc_slug", "TEXT DEFAULT ''"),
         ("intel_sources", "TEXT DEFAULT ''"),
+        # v0.7: judged from the listing by the LLM, not keyword-matched
+        ("work_mode", "TEXT DEFAULT 'unknown'"),
+        ("us_auth_required", "TEXT DEFAULT 'unclear'"),
     ]:
         if col not in existing_cols:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_def}")

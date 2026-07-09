@@ -17,6 +17,16 @@ class JobFilter(BaseModel):
         default="",
         description="Brief reason for BAD verdict, or empty string for GOOD/MAYBE.",
     )
+    # judged from the LISTING text only — smarter than keyword matching
+    work_mode: Literal["remote", "hybrid", "onsite", "unknown"] = Field(
+        default="unknown",
+        description="What the listing itself says about where the work happens.",
+    )
+    us_auth_required: Literal["yes", "no", "unclear"] = Field(
+        default="unclear",
+        description="Does the listing require US work authorization, citizenship, "
+                    "security clearance or W-2 status?",
+    )
 
 
 class CompanyResearch(BaseModel):

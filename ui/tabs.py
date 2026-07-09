@@ -136,6 +136,46 @@ def _fetch_gemma_models(api_key: str) -> list[str]:
         return []
 
 
+# ── Anthropic live model picker ───────────────────────────────────────────────
+_ANTHROPIC_MODELS_CACHE = None
+
+
+def _fetch_anthropic_models(api_key: str) -> list[str]:
+    """Live model ids from the Anthropic Models API. Returns [] WITHOUT caching
+    on missing key or failure, so a later render retries."""
+    global _ANTHROPIC_MODELS_CACHE
+    if _ANTHROPIC_MODELS_CACHE is not None:
+        return _ANTHROPIC_MODELS_CACHE
+    if not api_key:
+        return []
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        out = sorted(m.id for m in client.models.list())
+        _ANTHROPIC_MODELS_CACHE = out  # cache only on success
+        return out
+    except Exception:
+        return []
+
+
+def _anthropic_model_picker(current_value: str, label: str, api_key: str):
+    """Searchable Claude model picker; free-text fallback when the catalog is
+    unavailable (no key / fetch failed). Mirrors the Gemma picker."""
+    current = (current_value or "claude-haiku-4-5").strip()
+    models = _fetch_anthropic_models(api_key)
+    if not models:
+        return ui.input(
+            label=f"{label} (catalog unavailable — type a model id)",
+            value=current,
+        ).props("outlined").style("width: 420px;")
+    options = {m: m for m in models}
+    if current not in options:
+        options[current] = current
+    return ui.select(
+        options, value=current, with_input=True, label=f"{label} (type to search)",
+    ).props("outlined").style("min-width: 420px;")
+
+
 def _gemma_model_picker(current_value: str, label: str, api_key: str):
     """Searchable Gemma model picker; falls back to a free-text input when the
     catalog is unavailable (no key / fetch failed). Mirrors the OpenRouter picker."""
@@ -683,6 +723,26 @@ def render_setup_tab():
         profile_ta = ui.textarea(value=cfg["profile"]).props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
+        ui.html('<div class="section-title">Evaluation Brief (Stage 1 judge)</div>')
+        ui.html(
+            '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
+            'What the judge is hunting for. Rewrite it freely — HJ is a listing '
+            'analyzer, job filtering is just the default mission. The GOOD/MAYBE/BAD '
+            'output contract stays fixed no matter what you write here.</div>'
+        )
+        from pipeline.brain1 import DEFAULT_JUDGE_PROMPT
+        judge_ta = ui.textarea(
+            value=cfg.get("judge_prompt") or DEFAULT_JUDGE_PROMPT)\
+            .props("outlined autogrow")\
+            .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
+
+        def _restore_judge_default():
+            judge_ta.set_value(DEFAULT_JUDGE_PROMPT)
+            safe_notify("Default brief restored — hit Save to keep it.")
+
+        ui.button("Restore default brief", on_click=_restore_judge_default)\
+            .classes("btn-ghost").style("font-size: 12px;")
+
         ui.html('<div class="section-title">Geo-Eligibility</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
@@ -1077,6 +1137,7 @@ def render_setup_tab():
         s1_current = cfg.get("brain1_stage1_backend") or cfg.get("brain1_backend", "gemma")
         b1s1_select = ui.select(
             {"gemma": "Gemma 4 (Google AI Studio, free tier)",
+             "anthropic": "Claude (Anthropic API, paid)",
              "openrouter": "OpenRouter (free + paid, OpenAI-compatible)",
              "lmstudio": "LM Studio (local)"},
             value=s1_current,
@@ -1096,6 +1157,7 @@ def render_setup_tab():
         s23_current = cfg.get("brain1_stage23_backend") or cfg.get("brain1_backend", "gemma")
         b1s23_select = ui.select(
             {"gemma": "Gemma 4 (Google AI Studio, free tier)",
+             "anthropic": "Claude (Anthropic API, paid)",
              "openrouter": "OpenRouter (free + paid, OpenAI-compatible)",
              "lmstudio": "LM Studio (local)"},
             value=s23_current,
@@ -1133,12 +1195,27 @@ def render_setup_tab():
                 "OpenRouter model",
             )
 
+        with ui.column().style("gap: 8px;") as b1_anthropic_box:
+            ui.html(
+                '<div style="font-size: 12px; color: var(--text-dim); margin: 8px 0;">'
+                'Claude model (shared by both stages if either is set to Claude). '
+                'Stage 1 reads thousands of listings — light models (Haiku) are '
+                'highly recommended. Needs ANTHROPIC_API_KEY in keys.py:</div>'
+            )
+            b1_anthropic_model = _anthropic_model_picker(
+                cfg.get("brain1_anthropic_model", "claude-haiku-4-5"),
+                "Claude model", keys.get("anthropic", ""),
+            )
+
         def _refresh_b1_backend_boxes():
             b1_lmstudio_box.set_visibility(
                 b1s1_select.value == "lmstudio" or b1s23_select.value == "lmstudio"
             )
             b1_openrouter_box.set_visibility(
                 b1s1_select.value == "openrouter" or b1s23_select.value == "openrouter"
+            )
+            b1_anthropic_box.set_visibility(
+                b1s1_select.value == "anthropic" or b1s23_select.value == "anthropic"
             )
             b1_gemma_s1_box.set_visibility(b1s1_select.value == "gemma")
             b1_gemma_s23_box.set_visibility(b1s23_select.value == "gemma")
@@ -1255,6 +1332,9 @@ def render_setup_tab():
                 "hn_remote_only": bool(hn_remote_cb.value),
                 "theme": theme_select.value,
                 "profile": profile_ta.value,
+                # default brief saved as "" so future default improvements propagate
+                "judge_prompt": ("" if (judge_ta.value or "").strip() == DEFAULT_JUDGE_PROMPT
+                                 else (judge_ta.value or "").strip()),
                 "geo_eligibility": geo_ta.value,
                 "search_terms": terms_ta.value,
                 "hard_rejects": rejects_ta.value,
@@ -1279,6 +1359,7 @@ def render_setup_tab():
                 "brain1_lmstudio_url": b1_url.value,
                 "brain1_lmstudio_model": b1_model.value,
                 "brain1_openrouter_model": b1_openrouter_model.value,
+                "brain1_anthropic_model": (b1_anthropic_model.value or "claude-haiku-4-5").strip(),
                 "brain2_backend": b2_select.value,
                 "brain2_persona": b2_persona_ta.value,
                 "brain2_gemini_model": b2_gem_model.value,

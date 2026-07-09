@@ -24,6 +24,9 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1"
 DEFAULT_CONFIG = {
     "theme": "dark",
     "profile": "",
+    # Stage 1 evaluation brief. Empty = brain1.DEFAULT_JUDGE_PROMPT (job filter).
+    # Fully rewritable — HJ as a generic listing analyzer.
+    "judge_prompt": "",
     # Stage 1 geo-eligibility. Empty = no geo filtering (no assumptions). Format:
     # base country, passport, work authorization, sponsorship/relocation stance,
     # remote scope, timezone.
@@ -67,6 +70,8 @@ DEFAULT_CONFIG = {
     "brain1_lmstudio_url": "http://localhost:1234/v1",
     "brain1_lmstudio_model": "",
     "brain1_openrouter_model": "openrouter/free",
+    # Stage 1 reads thousands of listings — light Claude by design; picker in Setup.
+    "brain1_anthropic_model": "claude-haiku-4-5",
     "brain2_backend": "gemini",
     # Brain 2 persona/voice (snapshot + chat). Empty = no persona injected.
     "brain2_persona": "",
