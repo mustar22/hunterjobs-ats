@@ -1500,11 +1500,39 @@ def run_brain1() -> None:
                    visa=str(row.get("visa") or ""), progress_label=progress_label)
         return True
 
+    # queues are per-source: an HN-only scan drains HN, never touches the YC
+    # backlog. Drain-only runs (no sources enabled) still drain everything.
+    enabled_srcs = list(sources)
+    if use_yc:
+        enabled_srcs.append("yc")
+    if use_hn:
+        enabled_srcs.append("hn")
+
+    def _queued_count(src: str) -> int:
+        return conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE verdict='QUEUED' AND source=?",
+            (src,)).fetchone()[0]
+
+    def _scrape_allowed(src: str, label: str) -> bool:
+        """No re-scraping a source that still owes queued verdicts."""
+        pending = _queued_count(src)
+        if pending:
+            log.info(f"[stage1] skipping {label} scrape — {pending} queued "
+                     f"jobs still owed; draining those first")
+            return False
+        return True
+
     try:
         # drain QUEUED overflow from previous scans first, FIFO, same cap
-        queued_rows = conn.execute(
-            "SELECT * FROM jobs WHERE verdict='QUEUED' ORDER BY date_scraped ASC"
-        ).fetchall()
+        if enabled_srcs:
+            ph = ",".join("?" for _ in enabled_srcs)
+            queued_rows = conn.execute(
+                f"SELECT * FROM jobs WHERE verdict='QUEUED' AND source IN ({ph}) "
+                f"ORDER BY date_scraped ASC", enabled_srcs).fetchall()
+        else:
+            queued_rows = conn.execute(
+                "SELECT * FROM jobs WHERE verdict='QUEUED' ORDER BY date_scraped ASC"
+            ).fetchall()
         if queued_rows:
             log.info(f"[stage1] draining {len(queued_rows)} queued jobs from previous scans")
             runner_status.patch(
@@ -1522,7 +1550,8 @@ def run_brain1() -> None:
 
         # YC-only run (no JobSpy sites) skips this loop — avoids an empty JobSpy call.
         scrape_terms = (list(enumerate(search_terms, 1))
-                        if not aborted and jobspy_enabled(sources) else [])
+                        if not aborted and jobspy_enabled(sources)
+                        and all(_scrape_allowed(s, s) for s in sources) else [])
         if not scrape_terms:
             log.info("[stage1] No JobSpy sources selected; skipping LinkedIn/Indeed scrape.")
         for term_idx, term in scrape_terms:
@@ -1549,7 +1578,7 @@ def run_brain1() -> None:
                 break
 
         # ── YC startups (company-based, scraped once — not per term) ──────────
-        if not aborted and cfg.get("use_yc"):
+        if not aborted and cfg.get("use_yc") and _scrape_allowed("yc", "YC"):
             runner_status.patch("brain1", stage1="scraping Y Combinator startups")
             log.info("[stage1] Scraping Y Combinator startups")
             yc_rows = safe_scrape_yc(cfg)
@@ -1576,7 +1605,7 @@ def run_brain1() -> None:
                     break
 
         # ── Hacker News "Who is hiring?" (single thread, scraped once) ────────
-        if not aborted and cfg.get("use_hn"):
+        if not aborted and cfg.get("use_hn") and _scrape_allowed("hn", "HN"):
             runner_status.patch("brain1", stage1="scraping Hacker News 'Who is hiring?'")
             log.info("[stage1] Scraping Hacker News 'Who is hiring?'")
             hn_rows = hn.scrape_hn_jobs(cfg)

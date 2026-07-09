@@ -219,3 +219,42 @@ class TestDrainOnlyRun:
                             lambda: {**real_cfg, "use_yc": False})
         brain1.run_brain1()          # must not crash, no scan work
         assert len(env["judged_ids"]) == 0
+
+
+class TestPerSourceQueue:
+    def test_hn_only_scan_leaves_yc_queue_alone(self, env, tmp_path, monkeypatch):
+        # scan 1: YC run over-cap → 3 judged, 3 queued as source=yc
+        env["rows"] = _fake_rows(n_ok=6, n_reject=0)
+        env["cap"] = 3
+        brain1.run_brain1()
+        conn = _db(tmp_path)
+        assert _counts(conn)["queued"] == 3
+
+        # scan 2: HN-only — must not drain the YC backlog, must not rescrape YC
+        cfg2 = {
+            "profile": "", "geo_eligibility": "",
+            "search_terms": "", "hard_rejects": "REJECTME",
+            "sources": [], "use_yc": False, "use_hn": True,
+            "hn_remote_only": False, "use_rag": False,
+            "results_wanted": 100, "hours_old": 72,
+            "ledger_expire_days": 60, "max_llm_jobs_per_scan": 10,
+        }
+        monkeypatch.setattr(brain1, "load_config", lambda: dict(cfg2))
+        monkeypatch.setattr(brain1.hn, "scrape_hn_jobs", lambda cfg: [])
+        judged_before = len(env["judged_ids"])
+        brain1.run_brain1()
+        assert len(env["judged_ids"]) == judged_before   # zero LLM calls
+        assert _counts(conn)["queued"] == 3              # yc backlog untouched
+
+    def test_yc_scrape_skipped_while_yc_queue_pending(self, env, tmp_path):
+        env["rows"] = _fake_rows(n_ok=6, n_reject=0)
+        env["cap"] = 3
+        brain1.run_brain1()          # 3 queued yc
+        # scan 2, same source, tiny cap: drains 2 from queue, does NOT rescrape
+        env["rows"] = _fake_rows(n_ok=50, n_reject=0)    # would explode if scraped
+        env["cap"] = 2
+        brain1.run_brain1()
+        conn = _db(tmp_path)
+        c = _counts(conn)
+        assert c["queued"] == 1                          # 3 - 2 drained
+        assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 6

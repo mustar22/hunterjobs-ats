@@ -720,7 +720,12 @@ def render_setup_tab():
             'The more specific, the sharper Brain 1 filters. '
             'Include target salary, stack, geo constraints, and what you want to exclude.</div>'
         )
-        profile_ta = ui.textarea(value=cfg["profile"]).props("outlined autogrow")\
+        profile_ta = ui.textarea(
+            value=cfg["profile"],
+            placeholder="Senior backend engineer, 6 yrs Python/Go, distributed systems. "
+                        "Target $120k+ remote. Strong on infra, weak on frontend. "
+                        "No crypto, no ad-tech.")\
+            .props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
         ui.html('<div class="section-title">Evaluation Brief (Stage 1 judge)</div>')
@@ -750,7 +755,11 @@ def render_setup_tab():
             'Format: base country, passport, work authorization, sponsorship/relocation '
             'stance, remote scope, timezone.</div>'
         )
-        geo_ta = ui.textarea(value=cfg.get("geo_eligibility", "")).props("outlined autogrow")\
+        geo_ta = ui.textarea(
+            value=cfg.get("geo_eligibility", ""),
+            placeholder="EU citizen based in Lisbon. Can work anywhere in the EU, "
+                        "remote-global OK, no US work authorization, UTC+1.")\
+            .props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
         ui.html('<div class="section-title">Search Terms</div>')
@@ -758,7 +767,11 @@ def render_setup_tab():
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
             'One per line. Each becomes a JobSpy search.</div>'
         )
-        terms_ta = ui.textarea(value=cfg["search_terms"]).props("outlined autogrow")\
+        terms_ta = ui.textarea(
+            value=cfg["search_terms"],
+            placeholder="machine learning engineer remote\nbackend engineer fintech\n"
+                        "senior data engineer")\
+            .props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
         ui.html('<div class="section-title">Blacklist &amp; Suspects</div>')
@@ -774,7 +787,10 @@ def render_setup_tab():
                     'Substring match against title + company + description. Zero API cost. '
                     'Use Export/Import to share blacklists with others.</div>'
                 )
-                rejects_ta = ui.textarea(value=cfg["hard_rejects"]).props("outlined autogrow")\
+                rejects_ta = ui.textarea(
+                    value=cfg["hard_rejects"],
+                    placeholder="staffing agency\nsecurity clearance\nunpaid\ninternship")\
+                    .props("outlined autogrow")\
                     .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")
 
                 with ui.row().style("gap: 8px; margin-top: 8px;"):
