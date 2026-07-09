@@ -938,7 +938,9 @@ def gemma1_filter(client, model, backend, description: str, profile: str,
     if (visa or "").strip():
         meta += f" | Visa: {visa.strip()}"
     prompt = f"Job listing:\n{meta}\n\n{description[:6000]}"
-    return call_gemma(client, model, backend, system, prompt, JobFilter, stage="stage1")
+    # hard token lock: a rewritten brief can't make stage 1 write essays
+    return call_gemma(client, model, backend, system, prompt, JobFilter,
+                      stage="stage1", max_output_tokens=256)
 
 
 # A substring of 2-40 chars repeated 5+ times = a degenerate model loop
@@ -1000,6 +1002,9 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
                             judged: bool = True, work_mode: str = "unknown",
                             us_auth_required: str = "unclear") -> None:
     """judged=False = QUEUED path: stored in full but gemma1_done stays 0."""
+    # contract says <15 words; the brief is user-writable, so enforce it here
+    if reject_reason and len(reject_reason) > 160:
+        reject_reason = reject_reason[:160].rstrip() + "…"
     params = {c: job.get(c) for c in JOB_INSERT_COLS}
     params["date_posted_estimated"] = int(params.get("date_posted_estimated") or 0)
     params["yc_slug"] = params.get("yc_slug") or ""

@@ -612,3 +612,18 @@ class TestJudgeV07:
             "stage1")
         assert backend == "anthropic" and model == "claude-haiku-4-5"
         assert type(client).__name__ == "Anthropic"
+
+    def test_reject_reason_truncated_on_insert(self, tmp_path, monkeypatch):
+        import core.database as database
+        monkeypatch.setattr(database, "DB_PATH", tmp_path / "t.db")
+        database.init_db()
+        import sqlite3
+        import pipeline.brain1 as b1
+        conn = sqlite3.connect(tmp_path / "t.db")
+        conn.row_factory = sqlite3.Row
+        job = {c: "" for c in b1.JOB_INSERT_COLS}
+        job.update(id="j1", title="t", company="c", description="d" * 200)
+        b1.insert_job_with_verdict(conn, job, "BAD", "word " * 100)
+        r = conn.execute("SELECT reject_reason FROM jobs WHERE id='j1'").fetchone()
+        assert len(r["reject_reason"]) <= 161
+        conn.close()
