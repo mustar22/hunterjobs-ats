@@ -998,6 +998,34 @@ JOB_INSERT_COLS = (
 )
 
 
+def scraped_row_to_job(row, job_id: str = "", desc: str = "",
+                       dhash: str = "") -> dict | None:
+    """Scraped row (JobSpy/YC/HN) → insertable job dict. None = unusable
+    (no/short description). Also the pool-donor entry point (scrape_pool.py)."""
+    desc = desc or str(row.get("description") or "")
+    if not desc or len(desc) < 100:
+        return None
+    return {
+        "id": job_id or str(row.get("id") or fallback_job_id(row)),
+        "title": str(row.get("title") or ""),
+        "company": str(row.get("company") or ""),
+        "domain": _company_domain(row),
+        "location": str(row.get("location") or ""),
+        "job_type": str(row.get("job_type") or ""),
+        "salary_min": row.get("min_amount"),
+        "salary_max": row.get("max_amount"),
+        "currency": str(row.get("currency") or ""),
+        "source": str(row.get("site") or ""),
+        "url": str(row.get("job_url") or ""),
+        "description": desc,
+        "date_posted": str(row.get("date_posted") or ""),
+        "date_scraped": datetime.now(timezone.utc).isoformat(),
+        "description_hash": dhash or description_hash(desc),
+        "date_posted_estimated": int(row.get("date_posted_estimated") or 0),
+        "yc_slug": str(row.get("yc_slug") or ""),
+    }
+
+
 def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
                             judged: bool = True, work_mode: str = "unknown",
                             us_auth_required: str = "unclear") -> None:
@@ -1454,25 +1482,7 @@ def run_brain1() -> None:
         if not process:
             return True
 
-        job = {
-            "id": job_id,
-            "title": str(row.get("title") or ""),
-            "company": str(row.get("company") or ""),
-            "domain": _company_domain(row),
-            "location": str(row.get("location") or ""),
-            "job_type": str(row.get("job_type") or ""),
-            "salary_min": row.get("min_amount"),
-            "salary_max": row.get("max_amount"),
-            "currency": str(row.get("currency") or ""),
-            "source": str(row.get("site") or ""),
-            "url": url,
-            "description": desc,
-            "date_posted": str(row.get("date_posted") or ""),
-            "date_scraped": datetime.now(timezone.utc).isoformat(),
-            "description_hash": dhash,
-            "date_posted_estimated": int(row.get("date_posted_estimated") or 0),
-            "yc_slug": str(row.get("yc_slug") or ""),
-        }
+        job = scraped_row_to_job(row, job_id=job_id, desc=desc, dhash=dhash)
 
         counts["scraped"] += 1
         meter.count("scraped")
