@@ -59,6 +59,17 @@ def signal_pill(signal: str, culture_flags_json: str = "[]") -> str:
     return f'<span class="pill {cls}">{label}</span>'
 
 
+def work_mode_pill(mode: str) -> str:
+    """LLM-read work mode. Rough by nature — badge only when it said something."""
+    cls = {"remote": "pill-good", "hybrid": "pill-maybe", "onsite": "pill-bad"}.get(mode or "")
+    return f'<span class="pill {cls}">{mode.upper()}</span>' if cls else ""
+
+
+def us_auth_pill(value: str) -> str:
+    return ('<span class="pill pill-bad">US-AUTH</span>'
+            if value == "yes" else "")
+
+
 def fmt_ts(ts: str | None, length: int = 19) -> str:
     if not ts:
         return "never"

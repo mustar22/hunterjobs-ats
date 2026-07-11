@@ -318,6 +318,13 @@ textarea, input { color: var(--text) !important; }
   line-height: 1.7; white-space: pre-wrap; color: var(--text);
 }
 
+/* Placeholder hints: quieter than typed text */
+.q-field__native::placeholder, .q-field__input::placeholder,
+input::placeholder, textarea::placeholder {
+  color: var(--text-faint) !important;
+  opacity: 0.8 !important;
+}
+
 /* Search input */
 .q-field__control { background: var(--surface) !important; border-radius: 8px !important; }
 

@@ -18,10 +18,11 @@ _FIRST_SEEN = "COALESCE(s.first_seen_at, j.date_scraped)"
 
 
 def fetch_jobs(verdicts: list[str], query: str = "", limit: int = 300,
-               since_days: int = 0, sort: str = "found") -> list[dict]:
+               since_days: int = 0, sort: str = "found",
+               work_mode: str = "all", hide_us_auth: bool = False) -> list[dict]:
     """Newest-first by first_seen_at (sort='found') or by date_posted
     (sort='posted'; undated rows sink). since_days > 0 = only jobs first seen
-    within that window."""
+    within that window. work_mode/hide_us_auth filter on the LLM-read badges."""
     if not verdicts:
         return []
     conn = get_db_connection()
@@ -39,6 +40,11 @@ def fetch_jobs(verdicts: list[str], query: str = "", limit: int = 300,
         placeholders = ",".join("?" for _ in verdicts)
         sql += f"verdict IN ({placeholders}) AND (applied IS NULL OR applied = 0) "
         params.extend(verdicts)
+        if work_mode != "all":
+            sql += "AND COALESCE(j.work_mode, 'unknown') = ? "
+            params.append(work_mode)
+        if hide_us_auth:
+            sql += "AND COALESCE(j.us_auth_required, 'unclear') != 'yes' "
         if since_days > 0:
             cutoff = (datetime.now(timezone.utc)
                       - timedelta(days=since_days)).isoformat()

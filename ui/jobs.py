@@ -23,8 +23,8 @@ from pipeline.process_control import spawn_detached, kill_pid, _is_pid_alive
 
 from ui.theme import COLOR_SWATCHES
 from ui.helpers import (
-    verdict_pill, source_pill, signal_pill, fmt_ts, status_dot_class,
-    safe_notify, run_in_thread,
+    verdict_pill, source_pill, signal_pill, work_mode_pill, us_auth_pill,
+    fmt_ts, status_dot_class, safe_notify, run_in_thread,
 )
 from ui.db_queries import (
     fetch_jobs, mark_applied, unmark_applied, update_notes,
@@ -38,6 +38,8 @@ def render_jobs_tab():
         "query": "",
         "window_days": 0,   # 0 = all time; filters on ledger first_seen_at
         "sort": "found",    # found = first_seen_at | posted = date_posted
+        "work_mode": "all",
+        "hide_us_auth": False,
     }
 
     # ── Top row: scan button + live status ────────────────────────────────────
@@ -201,6 +203,21 @@ def render_jobs_tab():
         ui.select({"found": "Newest found", "posted": "Newest posted"},
                   value="found", label="Sort", on_change=set_sort)\
             .props("outlined dense").style("width: 150px;")
+
+        def set_work_mode(e):
+            state["work_mode"] = e.value
+            refresh_list()
+
+        ui.select({"all": "All modes", "remote": "Remote", "hybrid": "Hybrid",
+                   "onsite": "Onsite", "unknown": "Unlabeled"},
+                  value="all", label="Work mode", on_change=set_work_mode)\
+            .props("outlined dense").style("width: 140px;")
+
+        def toggle_us_auth(e):
+            state["hide_us_auth"] = bool(e.value)
+            refresh_list()
+
+        ui.checkbox("Hide US-auth", value=False, on_change=toggle_us_auth)
         search_input = ui.input(placeholder="Search title, company, stack, description...")\
             .classes("mono").style("flex: 1; min-width: 240px;")
 
@@ -210,6 +227,12 @@ def render_jobs_tab():
         search_input.on("change", on_search)
         search_input.on("blur", on_search)
         search_input.on("keyup.enter", on_search)
+
+    ui.label("Work-mode and US-auth badges are read from the listing by the "
+             "LLM — rough by nature, some may be mislabeled (LinkedIn "
+             "listings especially).")\
+        .style("color: var(--text-faint); font-size: 11.5px; padding: 0 16px; "
+               "margin-bottom: 8px;")
 
     # ── Job list container ────────────────────────────────────────────────────
     # When new jobs arrive mid-scan, nudge rather than rebuild the list — a
@@ -227,7 +250,9 @@ def render_jobs_tab():
         refresh_nudge_container.clear()
         rows = fetch_jobs(state["verdicts"], state["query"],
                           since_days=state["window_days"],
-                          sort=state["sort"])
+                          sort=state["sort"],
+                          work_mode=state["work_mode"],
+                          hide_us_auth=state["hide_us_auth"])
         list_meta["last_count"] = len(rows)
         list_meta["last_query"] = state["query"]
         list_meta["last_verdicts"] = tuple(state["verdicts"])
@@ -357,19 +382,15 @@ def render_job_row(row: dict, refresh_list_fn):
                     meta_bits.append(
                         f'{sal_min or "?"}–{sal_max or "?"} {row.get("currency") or ""}'
                     )
-                # v0.7: read from the listing by the judge, not keyword-matched
-                wm = row.get("work_mode") or "unknown"
-                if wm != "unknown":
-                    meta_bits.append(wm)
-                if row.get("us_auth_required") == "yes":
-                    meta_bits.append(
-                        '<span style="color: var(--bad);">US-auth required</span>')
                 ui.html(
                     f'<div class="job-meta">{" · ".join(str(b) for b in meta_bits)}</div>'
                 )
 
             with ui.row().style("gap: 6px; align-items: center; flex-shrink: 0;"):
                 ui.html(source_pill(row.get("source") or ""))
+                # v0.7 badges: read from the listing by the judge, rough by nature
+                ui.html(work_mode_pill(row.get("work_mode") or ""))
+                ui.html(us_auth_pill(row.get("us_auth_required") or ""))
                 ui.html(verdict_pill(
                     row.get("verdict") or "—",
                     row.get("reject_reason") or "",

@@ -769,7 +769,7 @@ def render_setup_tab():
         )
         terms_ta = ui.textarea(
             value=cfg["search_terms"],
-            placeholder="machine learning engineer remote\nbackend engineer fintech\n"
+            placeholder="machine learning engineer\nbackend engineer fintech\n"
                         "senior data engineer")\
             .props("outlined autogrow")\
             .style("width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;")

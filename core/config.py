@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     # base country, passport, work authorization, sponsorship/relocation stance,
     # remote scope, timezone.
     "geo_eligibility": "",
-    "search_terms": "machine learning engineer remote\ngenerative AI engineer remote",
+    "search_terms": "machine learning engineer\ngenerative AI engineer",
     "hard_rejects": "US citizenship required\nW2 only\nsecurity clearance",
     # Agency-suspects the user dismissed as "not an agency" — kept out of suggestions.
     "dismissed_suspects": [],
