@@ -627,3 +627,16 @@ class TestJudgeV07:
         r = conn.execute("SELECT reject_reason FROM jobs WHERE id='j1'").fetchone()
         assert len(r["reject_reason"]) <= 161
         conn.close()
+
+
+def test_yc_per_company_cap_stops_slug_collisions():
+    from pipeline.brain1 import YC_MAX_JOBS_PER_COMPANY, yc_jobs_to_rows
+    flood = [{"company": "Pulse", "title": f"Nurse {i}",
+              "job_url": f"https://g.io/pulse/{i}", "description": "x" * 50}
+             for i in range(YC_MAX_JOBS_PER_COMPANY + 40)]
+    flood += [{"company": "CleanCo", "title": "Eng",
+               "job_url": "https://g.io/clean/1", "description": "x" * 50}]
+    rows = yc_jobs_to_rows(flood)
+    pulse_rows = [r for r in rows if r["company"] == "Pulse"]
+    assert len(pulse_rows) == YC_MAX_JOBS_PER_COMPANY
+    assert any(r["company"] == "CleanCo" for r in rows)

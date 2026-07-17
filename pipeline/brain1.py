@@ -1179,13 +1179,28 @@ def safe_scrape(term: str, sources: list[str], results_wanted: int, hours_old: i
 
 
 # ── YC startups scraper (company-based, separate from JobSpy) ─────────────────
+# a seed-stage startup does not have 2,500 open roles — beyond this the ATS
+# slug almost certainly resolved to some unrelated giant (see: YC's "Pulse"
+# vs the UK healthcare staffing agency squatting greenhouse.io/pulse)
+YC_MAX_JOBS_PER_COMPANY = 150
+
+
 def yc_jobs_to_rows(yc_jobs: list[dict]) -> list[dict]:
     """Convert ycombinator_jobs_scraper output into JobSpy-style row dicts so YC
     listings flow through the exact same Stage 1 path as LinkedIn/Indeed. YC has
     no salary or numeric id; we leave id=None so the downstream fallback builds a
     stable one from company/title/date."""
+    per_company: dict[str, int] = {}
     rows = []
     for j in yc_jobs:
+        comp = (j.get("company") or "").strip().lower()
+        per_company[comp] = per_company.get(comp, 0) + 1
+        if per_company[comp] > YC_MAX_JOBS_PER_COMPANY:
+            if per_company[comp] == YC_MAX_JOBS_PER_COMPANY + 1:
+                print(f"[yc] '{j.get('company')}' exceeds "
+                      f"{YC_MAX_JOBS_PER_COMPANY} listings — likely a wrong "
+                      f"ATS board, skipping the overflow")
+            continue
         rows.append({
             "id": None,
             "title": j.get("title") or "",
