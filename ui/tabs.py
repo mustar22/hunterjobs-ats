@@ -136,6 +136,117 @@ def _fetch_gemma_models(api_key: str) -> list[str]:
         return []
 
 
+# ── Gemini live model picker (same catalog, Gemini side of it) ────────────────
+_GEMINI_MODELS_CACHE = None
+
+
+def _fetch_gemini_models(api_key: str) -> list[str]:
+    """Gemini ids from the same AI Studio catalog. Drops embeddings, TTS/vision
+    variants and anything not usable as a chat model."""
+    global _GEMINI_MODELS_CACHE
+    if _GEMINI_MODELS_CACHE is not None:
+        return _GEMINI_MODELS_CACHE
+    if not api_key:
+        return []
+    try:
+        import requests
+        r = requests.get(_GEMINI_MODELS_URL, params={"key": api_key,
+                                                     "pageSize": 1000}, timeout=8)
+        r.raise_for_status()
+        out = []
+        for m in r.json().get("models", []):
+            if "generateContent" not in (m.get("supportedGenerationMethods") or []):
+                continue
+            name = (m.get("name") or "").split("/")[-1]
+            low = name.lower()
+            if "gemini" in low and not any(
+                    t in low for t in ("embedding", "tts", "image", "audio",
+                                       "vision", "live")):
+                out.append(name)
+        out = sorted(set(out))
+        _GEMINI_MODELS_CACHE = out
+        return out
+    except Exception:
+        return []
+
+
+# ── OpenAI live model picker ──────────────────────────────────────────────────
+_OPENAI_MODELS_CACHE = None
+
+
+def _fetch_openai_models(api_key: str) -> list[str]:
+    """Chat-capable OpenAI ids. Their /models returns everything they host,
+    so the non-chat families get filtered out."""
+    global _OPENAI_MODELS_CACHE
+    if _OPENAI_MODELS_CACHE is not None:
+        return _OPENAI_MODELS_CACHE
+    if not api_key:
+        return []
+    try:
+        import requests
+        r = requests.get("https://api.openai.com/v1/models",
+                         headers={"Authorization": f"Bearer {api_key}"},
+                         timeout=8)
+        r.raise_for_status()
+        out = sorted(
+            m["id"] for m in r.json().get("data", [])
+            if m.get("id") and not any(
+                t in m["id"] for t in ("embedding", "whisper", "tts", "dall-e",
+                                       "image", "audio", "moderation",
+                                       "realtime", "transcribe")))
+        _OPENAI_MODELS_CACHE = out
+        return out
+    except Exception:
+        return []
+
+
+# our picks, pinned to the top of a LIVE catalog - never the catalog itself,
+# so a model going away or a new one landing needs no code change
+_RECOMMENDED = {
+    "gemini": {
+        "gemini-3.5-flash": "fast, cheap, good at tool use",
+        "gemini-3.1-pro-preview": "when you want it to think harder",
+    },
+    "gemma": {
+        "gemma-4-26b-a4b-it": "the free-tier workhorse",
+    },
+    "anthropic": {
+        "claude-sonnet-4-6": "balanced",
+        "claude-haiku-4-5-20251001": "cheap and fast, good for Stage 1",
+        "claude-opus-4-7": "top tier, pricey",
+    },
+    "openai": {
+        "gpt-5.5": "flagship",
+        "gpt-5.4-mini": "fast and cheap",
+    },
+}
+
+
+def _live_picker(models: list[str], current: str, label: str,
+                 recommended: dict[str, str] | None = None,
+                 width: str = "420px"):
+    """Searchable picker over a live catalog, with our picks pinned on top and
+    a note saying why. Free-text input when the catalog can't be fetched, so a
+    missing key never blocks you from typing a model id."""
+    current = (current or "").strip()
+    if not models:
+        return ui.input(label=f"{label} (catalog unavailable - type a model id)",
+                        value=current).props("outlined").style(f"width: {width};")
+    options: dict[str, str] = {}
+    for mid, why in (recommended or {}).items():
+        if mid in models:
+            options[mid] = f"{mid} - {why}"
+    for m in models:
+        options.setdefault(m, m)
+    if current and current not in options:
+        options[current] = current
+    if not current:
+        current = next(iter(options))
+    return ui.select(options, value=current, with_input=True,
+                     label=f"{label} (type to search)")\
+        .props("outlined").style(f"min-width: {width};")
+
+
 # ── Anthropic live model picker ───────────────────────────────────────────────
 _ANTHROPIC_MODELS_CACHE = None
 
@@ -1261,36 +1372,27 @@ def render_setup_tab():
 
         # Containers wrap each model-field group so we can show/hide them.
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_gemini_box:
-            b2_gem_model = ui.select(
-                {
-                    "gemini-3.5-flash":        "Gemini 3.5 Flash (recommended — fast, cheap, top agentic)",
-                    "gemini-3.1-pro-preview":  "Gemini 3.1 Pro (best for deep reasoning)",
-                },
-                value=cfg.get("brain2_gemini_model", "gemini-3.5-flash"),
-            ).style("min-width: 360px;")
+            b2_gem_model = _live_picker(
+                _fetch_gemini_models(keys["google"]),
+                cfg.get("brain2_gemini_model", "gemini-3.5-flash"),
+                "Gemini model", _RECOMMENDED["gemini"])
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_gemma_box:
-            b2_gemma_model = ui.input(label="Gemma model",
-                                      value=cfg.get("brain2_gemma_model",
-                                                    "gemma-4-26b-a4b-it"))\
-                .props("outlined").style("width: 360px;")
+            b2_gemma_model = _live_picker(
+                _fetch_gemma_models(keys["google"]),
+                cfg.get("brain2_gemma_model", "gemma-4-26b-a4b-it"),
+                "Gemma model", _RECOMMENDED["gemma"])
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_anthropic_box:
-            b2_anthropic_model = ui.select(
-                {
-                    "claude-opus-4-7":           "Claude Opus 4.7 (top tier)",
-                    "claude-sonnet-4-6":         "Claude Sonnet 4.6 (balanced, recommended)",
-                    "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (cheap, fast)",
-                },
-                value=cfg.get("brain2_anthropic_model", "claude-sonnet-4-6"),
-            ).style("min-width: 360px;")
+            b2_anthropic_model = _live_picker(
+                _fetch_anthropic_models(keys["anthropic"]),
+                cfg.get("brain2_anthropic_model", "claude-sonnet-4-6"),
+                "Claude model", _RECOMMENDED["anthropic"])
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_openai_box:
-            b2_openai_model = ui.select(
-                {
-                    "gpt-5.5":      "GPT-5.5 (flagship)",
-                    "gpt-5.4-mini": "GPT-5.4 Mini (fast, cheap)",
-                    "gpt-5.4-nano": "GPT-5.4 Nano (fastest)",
-                },
-                value=cfg.get("brain2_openai_model", "gpt-5.5"),
-            ).style("min-width: 360px;")
+            ui.html('<div style="font-size: 12px; color: var(--text-dim);">'
+                    'Needs OPENAI_API_KEY in keys.py.</div>')
+            b2_openai_model = _live_picker(
+                _fetch_openai_models(keys["openai"]),
+                cfg.get("brain2_openai_model", "gpt-5.5"),
+                "OpenAI model", _RECOMMENDED["openai"])
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_openrouter_box:
             ui.html(
                 '<div style="font-size: 12px; color: var(--text-dim);">'
