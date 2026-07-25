@@ -187,9 +187,9 @@ Your `keys.py` is gitignored. Don't commit it.
 - **JobSpy can be flaky** - LinkedIn occasionally rate-limits, and JobSpy 1.1.82 has a bug where it mis-parses some listings' locations into an invalid-country error that aborts the whole scrape. HunterJobs patches around that at runtime (see the comment block in `pipeline/brain1.py`), but a search term can still occasionally produce nothing on a given day.
 - **YC dates are approximate for WaaS-fallback jobs** - companies without a discoverable ATS board only expose rounded relative ages ("5 months"), so `date_posted` there is an estimate. As of v0.5 these are flagged, rendered as `~date`, and never used for freshness decisions - the first-seen ledger decides what's new.
 - **LinkedIn doesn't always return a posting date or location** - some rows show blank for those. That's upstream data, not a bug.
-- **Stage 2/3 fail more often than I'd like** - Gemma 4 sometimes returns malformed JSON or just times out. There are manual retry buttons inside each job's expansion for both.
 - **Local models < 20B params chat poorly with tools.** They'll echo the tool result back into their text. Snapshot generation with local models is fine; chat works best with Gemini or Claude.
 - **Contact discovery is best-effort.** Team pages vary wildly, GitHub org membership is often private, and permuted emails are educated guesses (marked as such). Often the honest answer is "no public contact found" - that's by design, not a failure. Use the per-person email search on the few people who matter.
+- **Founders and CEOs mostly won't reply.** This one isn't a bug I can fix. HunterJobs will hand you a real name and often a real address, and then that address will sit there in silence, unread, while the company keeps posting that they're desperately hiring. Write to them anyway. The ones who do reply tend to reply properly, and that beats a hundred applications into a form.
 
 ---
 

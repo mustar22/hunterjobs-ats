@@ -210,6 +210,13 @@ _RECOMMENDED = {
     "gemma": {
         "gemma-4-26b-a4b-it": "the free-tier workhorse",
     },
+    # same Google client either way, the model id decides. worth knowing:
+    # free-tier usage can be used to improve Google's models, paid isn't.
+    "google": {
+        "gemma-4-26b-a4b-it": "free tier, but Google may train on what you send",
+        "gemini-3.5-flash-lite": "paid, cheap, and they don't train on it",
+        "gemini-3.5-flash": "paid, sharper, still cheap",
+    },
     "anthropic": {
         "claude-sonnet-4-6": "balanced",
         "claude-haiku-4-5-20251001": "cheap and fast, good for Stage 1",
@@ -285,6 +292,15 @@ def _anthropic_model_picker(current_value: str, label: str, api_key: str):
     return ui.select(
         options, value=current, with_input=True, label=f"{label} (type to search)",
     ).props("outlined").style("min-width: 420px;")
+
+
+def _google_model_picker(current_value: str, label: str, api_key: str):
+    """Everything AI Studio serves you, both families: Gemma (free tier) and
+    Gemini (paid, and paid means they don't train on your prompts). Same client
+    either way - the model id is the only difference."""
+    models = sorted(set(_fetch_gemma_models(api_key) + _fetch_gemini_models(api_key)))
+    return _live_picker(models, (current_value or "gemma-4-26b-a4b-it").strip(),
+                        label, _RECOMMENDED["google"])
 
 
 def _gemma_model_picker(current_value: str, label: str, api_key: str):
@@ -1263,40 +1279,41 @@ def render_setup_tab():
         # Prefer per-stage backend, fall back to the legacy single key.
         s1_current = cfg.get("brain1_stage1_backend") or cfg.get("brain1_backend", "gemma")
         b1s1_select = ui.select(
-            {"gemma": "Gemma 4 (Google AI Studio, free tier)",
+            {"gemma": "Google AI Studio (Gemma free, Gemini paid)",
              "anthropic": "Claude (Anthropic API, paid)",
              "openrouter": "OpenRouter (free + paid, OpenAI-compatible)",
              "lmstudio": "LM Studio (local)"},
             value=s1_current,
         ).style("min-width: 320px;")
         with ui.column().style("gap: 8px;") as b1_gemma_s1_box:
-            b1_s1_gemma_model = _gemma_model_picker(
+            b1_s1_gemma_model = _google_model_picker(
                 cfg.get("brain1_stage1_gemma_model", "gemma-4-26b-a4b-it"),
-                "Stage 1 Gemma model", keys.get("google", ""),
+                "Stage 1 model", keys.get("google", ""),
             )
 
-        ui.html('<div class="section-title">Brain 1 — Stage 2/3 Backend (company research + outreach)</div>')
+        ui.html('<div class="section-title">Brain 1 — Enrichment Backend (company research + outreach)</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
-            'Stage 2/3 only runs on GOOD jobs (low volume) and needs solid '
-            'instruction-following. Gemma 4 recommended.</div>'
+            'Enrichment only runs on GOOD jobs (low volume) and needs solid '
+            'instruction-following. Gemma 4 is fine here; pick a Gemini model '
+            'if you would rather Google did not train on what you send.</div>'
         )
         s23_current = cfg.get("brain1_stage23_backend") or cfg.get("brain1_backend", "gemma")
         b1s23_select = ui.select(
-            {"gemma": "Gemma 4 (Google AI Studio, free tier)",
+            {"gemma": "Google AI Studio (Gemma free, Gemini paid)",
              "anthropic": "Claude (Anthropic API, paid)",
              "openrouter": "OpenRouter (free + paid, OpenAI-compatible)",
              "lmstudio": "LM Studio (local)"},
             value=s23_current,
         ).style("min-width: 320px;")
         with ui.column().style("gap: 8px;") as b1_gemma_s23_box:
-            b1_s2_gemma_model = _gemma_model_picker(
+            b1_s2_gemma_model = _google_model_picker(
                 cfg.get("brain1_stage2_gemma_model", "gemma-4-26b-a4b-it"),
-                "Stage 2 Gemma model (company research)", keys.get("google", ""),
+                "Research model (company intel)", keys.get("google", ""),
             )
-            b1_s3_gemma_model = _gemma_model_picker(
+            b1_s3_gemma_model = _google_model_picker(
                 cfg.get("brain1_stage3_gemma_model", "gemma-4-26b-a4b-it"),
-                "Stage 3 Gemma model (outreach)", keys.get("google", ""),
+                "Outreach model (contacts + drafts)", keys.get("google", ""),
             )
 
         with ui.column().style("gap: 8px;") as b1_lmstudio_box:
@@ -1377,10 +1394,9 @@ def render_setup_tab():
                 cfg.get("brain2_gemini_model", "gemini-3.5-flash"),
                 "Gemini model", _RECOMMENDED["gemini"])
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_gemma_box:
-            b2_gemma_model = _live_picker(
-                _fetch_gemma_models(keys["google"]),
+            b2_gemma_model = _google_model_picker(
                 cfg.get("brain2_gemma_model", "gemma-4-26b-a4b-it"),
-                "Gemma model", _RECOMMENDED["gemma"])
+                "Google model", keys["google"])
         with ui.column().style("gap: 8px; margin-top: 8px;") as b2_anthropic_box:
             b2_anthropic_model = _live_picker(
                 _fetch_anthropic_models(keys["anthropic"]),
