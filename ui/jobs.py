@@ -367,9 +367,15 @@ def render_job_row(row: dict, refresh_list_fn):
         with ui.row().style("align-items: flex-start; justify-content: space-between; gap: 12px;"):
             with ui.column().style("gap: 2px; flex: 1; min-width: 0;"):
                 ui.html(f'<div class="job-title">{row.get("title","(no title)")}</div>')
-                date_txt = fmt_ts(row.get("date_posted"), 10)
-                if row.get("date_posted_estimated"):
-                    date_txt = f"~{date_txt}"  # WaaS estimate, not a real date
+                # YC "Work at a Startup" postings are evergreen and expose no
+                # real date - we back-computed one from a rounded relative age
+                # and it comes out as "2021". Rather than show a number we
+                # can't defend, say when it entered the pool instead.
+                if (row.get("date_posted_estimated")
+                        or not (row.get("date_posted") or "").strip()):
+                    date_txt = f'listed {fmt_ts(row.get("first_seen_at"), 10)}'
+                else:
+                    date_txt = fmt_ts(row.get("date_posted"), 10)
                 meta_bits = [
                     row.get("company") or "—",
                     date_txt,

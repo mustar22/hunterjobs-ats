@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.7.0-9d6fff" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.8.0-9d6fff" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
   <img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-orange" />
   <img alt="tests" src="https://github.com/mustar22/hunterjobs-ats/actions/workflows/test.yml/badge.svg" />
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <sub><strong>v0.7.0 just shipped</strong> - you can rewrite what the judge looks for, it now reads work mode and visa requirements off the listing, and Claude joined the backends. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
+  <sub><strong>v0.8.0 just shipped</strong> - one button pulls down a few thousand companies I already researched plus YC/HN listings to judge, and every model picker is live now. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
 </p>
 
 ---
@@ -167,8 +167,9 @@ Open the **Setup** tab and:
 3. Edit **Search Terms** - one per line. These get passed to JobSpy as LinkedIn/Indeed queries. (YC scrapes whole companies, so Stage 1's LLM does the matching there.)
 4. Edit the **Hard Rejects** keyword list. Anything matched here gets auto-BAD without burning an LLM call. Default list catches the obvious staffing/recruiting/US-only stuff. You can export/import this as a `.txt` to share with others.
 5. Pick your backends. Brain 1's Stage 1 and Enrichment are set separately, and every picker is live - it asks the provider what it serves today rather than reading a list I hardcoded and forgot to update. Defaults are sensible: Gemma 4 for Brain 1, Gemini Flash for Brain 2. On Google you can pick either family; Gemma is the free tier (Google may train on what you send it), Gemini is paid and they don't.
-6. **Strongly recommended: add a `TAVILY_API_KEY` or `SERPER_API_KEY`** (both have free tiers). The keyless fallback works from some connections and not others - datacenter IPs get starved and several countries get captcha-walled, and when search silently returns nothing the company research quietly gets much worse. I found this the hard way: 92% of one enrichment run came back with no sources read. With a key it was 0%.
-7. (Optional) Hit **Backfill embeddings** to enable "similar past applications" over jobs you scraped before the RAG feature existed.
+6. **Fastest start: hit the orange "Parse server DB" button** at the top of Setup. It pulls down ~1,900 companies I've already researched plus ~3,100 YC and Hacker News listings, so your first run has something to judge and skips the research bill on companies already known. Nothing in it is judged for you - your profile decides. It brings no contacts and no LinkedIn/Indeed listings; hunt and scrape those yourself.
+7. **Strongly recommended: add a `TAVILY_API_KEY` or `SERPER_API_KEY`** (both have free tiers). The keyless fallback works from some connections and not others - datacenter IPs get starved and several countries get captcha-walled, and when search silently returns nothing the company research quietly gets much worse. I found this the hard way: 92% of one enrichment run came back with no sources read. With a key it was 0%.
+8. (Optional) Hit **Backfill embeddings** to enable "similar past applications" over jobs you scraped before the RAG feature existed.
 
 ![Market Analyzer](screenshots/market_analyzer.png)
 
@@ -273,11 +274,14 @@ Your `keys.py` is gitignored. Don't commit it.
 - **pytest suite + GitHub Actions CI** - green badge above
 - **Hardened JobSpy scraping** - runtime fix for the 1.1.82 invalid-country crash that aborted scrapes containing foreign-location listings
 
-### v0.8 - next up
+### v0.8.0 - shipped
 
-- **Free company intel, pre-researched** - a weekly dump of the companies I've already researched (what they build, their stack, hiring signal, staffing-agency flags), importable into your local DB so you skip hundreds of LLM calls on day one. No contacts in it, ever - those get hunted on your own key, from your own machine
-- **Companies tab** - browse and search every company you've got intel on, whether it came from the shared dump or your own scans. Useful the night before an interview
-- **Live model pickers everywhere** - no more hardcoded model lists going stale. Every backend fetches its own catalog, with sensible picks recommended at the top
+- **Parse server DB** - one orange button in Setup pulls down everything already researched on [hunterjobsats.com](https://hunterjobsats.com): ~1,900 companies (what they build, real stack, hiring signal, staffing-agency flags) plus ~3,100 YC and Hacker News listings to judge. Your first run has something to chew on and skips the research bill on companies that are already known
+- **What the seed will never contain**: contacts, my verdicts, or LinkedIn/Indeed listings. Contacts are personal data and yours to hunt on your own keys. Verdicts depend on your profile, not mine, so everything arrives QUEUED. And redistributing LinkedIn text is the line between analysing public postings and running a listings database - scrape those yourself, it takes twenty minutes
+- **Both reads survive** - imported research lands in its own table, so it never overwrites yours. Each job shows SERVER INTEL beside YOUR RESEARCH; where they disagree is worth a look
+- **Companies tab** - search everything you have intel on, grows as you scroll. Useful the night before an interview
+- **Live model pickers everywhere** - no hardcoded model lists left to go stale. Every backend asks the provider what it serves today, with sensible picks pinned on top. Google now offers Gemini as well as Gemma: same client, and the paid tier means they don't train on what you send
+- **Run one step on its own** - a drawer in Setup with Scrape only and Enrich only, for when you want listings banked now and the LLM spend later
 
 ### Later
 

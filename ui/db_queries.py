@@ -29,13 +29,14 @@ def fetch_jobs(verdicts: list[str], query: str = "", limit: int = 300,
     try:
         params: list = []
         if query.strip():
-            sql = ("SELECT j.* FROM jobs j JOIN jobs_fts f ON j.rowid = f.rowid "
+            sql = (f"SELECT j.*, {_FIRST_SEEN} AS first_seen_at FROM jobs j "
+                   "JOIN jobs_fts f ON j.rowid = f.rowid "
                    "LEFT JOIN seen_jobs s ON s.job_key = j.id WHERE ")
             safe_q = query.replace('"', '""')
             sql += "jobs_fts MATCH ? AND "
             params.append(f'"{safe_q}"*')
         else:
-            sql = ("SELECT j.* FROM jobs j "
+            sql = (f"SELECT j.*, {_FIRST_SEEN} AS first_seen_at FROM jobs j "
                    "LEFT JOIN seen_jobs s ON s.job_key = j.id WHERE ")
         placeholders = ",".join("?" for _ in verdicts)
         sql += f"verdict IN ({placeholders}) AND (applied IS NULL OR applied = 0) "
