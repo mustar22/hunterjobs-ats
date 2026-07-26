@@ -20,6 +20,7 @@
   <img alt="stars" src="https://img.shields.io/github/stars/mustar22/hunterjobs-ats?style=flat&color=9d6fff" />
   <img alt="forks" src="https://img.shields.io/github/forks/mustar22/hunterjobs-ats?style=flat&color=9d6fff" />
   <img alt="issues" src="https://img.shields.io/github/issues/mustar22/hunterjobs-ats?color=9d6fff" />
+  <img alt="clones" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mustar22/hunterjobs-ats/traffic-data/traffic/clones-badge.json" />
 </p>
 
 <p align="center">

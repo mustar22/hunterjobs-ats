@@ -1,0 +1,70 @@
+# GitHub only keeps 14 days of traffic data, so anything older is gone forever
+# unless something writes it down. This polls daily and accumulates the totals
+# on a separate `traffic-data` branch (keeps the noise out of main's history).
+name: traffic
+
+on:
+  schedule:
+    - cron: "17 3 * * *"      # daily, odd minute to dodge the on-the-hour rush
+  workflow_dispatch:           # and on demand
+
+permissions:
+  contents: write
+
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the data branch (create it on first run)
+        uses: actions/checkout@v4
+        with:
+          ref: traffic-data
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Accumulate clones + views
+        env:
+          # the traffic API needs push access; the default token usually has it,
+          # but set TRAFFIC_TOKEN (a PAT with repo scope) if you get a 403
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p traffic
+          [ -f traffic/totals.json ] || echo '{"clones":0,"views":0,"seen":{}}' > traffic/totals.json
+
+          for kind in clones views; do
+            curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+                 -H "Accept: application/vnd.github+json" \
+                 "https://api.github.com/repos/$REPO/traffic/$kind" > "$kind.json" || echo '{}' > "$kind.json"
+          done
+
+          python3 - <<'PY'
+          import datetime, json, pathlib
+          t = json.loads(pathlib.Path("traffic/totals.json").read_text())
+          t.setdefault("seen", {})
+          for kind in ("clones", "views"):
+              data = json.loads(pathlib.Path(f"{kind}.json").read_text())
+              for day in data.get(kind, []):
+                  # keyed per day, last value wins: overlapping 14-day windows
+                  # can't double count, and today's partial count self-corrects
+                  # when tomorrow's poll reports the finished number
+                  t["seen"][f"{kind}:{day['timestamp'][:10]}"] = day["count"]
+              t[kind] = sum(v for k, v in t["seen"].items()
+                            if k.startswith(f"{kind}:"))
+          t["updated"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+          # shields.io endpoint format, so the badge needs no third-party service
+          pathlib.Path("traffic/clones-badge.json").write_text(json.dumps({
+              "schemaVersion": 1, "label": "clones", "color": "9d6fff",
+              "message": f'{t["clones"]} since Jul 2026'}))
+          pathlib.Path("traffic/totals.json").write_text(json.dumps(t, indent=1))
+          print("clones:", t["clones"], "views:", t["views"])
+          PY
+
+      - name: Commit if it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add traffic/
+          git diff --staged --quiet || git commit -m "traffic: $(date -u +%Y-%m-%d)"
+          git push origin HEAD:traffic-data
