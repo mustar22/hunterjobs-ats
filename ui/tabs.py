@@ -1541,8 +1541,10 @@ def render_setup_tab():
             save_config(new_cfg)
             ui.notify("Saved.", type="positive")
 
-        ui.button("Save Settings", on_click=do_save).classes("btn-primary")\
-            .style("margin-top: 12px; width: 200px;")
+        ui.button("Save Settings", on_click=do_save).props("unelevated size=lg")\
+            .style("margin-top: 14px; width: 260px; background:#22c55e "
+                   "!important; color:#0b1f12; font-weight:700; "
+                   "font-size:15px;")
 
         # ── Run one half of the pipeline ────────────────────────────────────────
         with ui.expansion("Run one step on its own")\

@@ -159,36 +159,43 @@ def render_companies_tab(is_active=None):
         return is_active() if is_active else True
 
     async def _scroll_watch():
-        """Pull the next page in when you get near the bottom."""
-        if not _showing() or time.time() - state["grew_at"] < 1.5:
-            return
+        """Pull the next page in when you get near the bottom. Everything here
+        is best-effort: a timer can fire once more after its slot is gone (the
+        client navigated or refreshed), and that must stay silent."""
         try:
+            if not _showing() or time.time() - state["grew_at"] < 1.5:
+                return
             near_bottom = await ui.run_javascript(
                 "window.scrollY + window.innerHeight >"
                 " document.body.scrollHeight - 400", timeout=2.0)
+            if near_bottom:
+                state["grew_at"] = time.time()
+                _more()
         except Exception:
-            return                      # client went away mid-poll, no harm
-        if near_bottom:
-            state["grew_at"] = time.time()
-            _more()
+            pass
 
     def _idle_watch():
         """Away from the tab for a while: shrink back so an idle session
         isn't holding thousands of rows in the DOM."""
-        if _showing():
-            state["left_at"] = 0.0
-            return
-        if state["left_at"] == 0.0:
-            state["left_at"] = time.time()
-        elif (time.time() - state["left_at"] > RESET_AFTER_S
-                and state["limit"] > PAGE):
-            state["limit"] = PAGE
-            state["left_at"] = 0.0
-            refresh()
+        try:
+            # don't poll the client while you're on another tab
+            scroll_timer.active = _showing()
+            if _showing():
+                state["left_at"] = 0.0
+                return
+            if state["left_at"] == 0.0:
+                state["left_at"] = time.time()
+            elif (time.time() - state["left_at"] > RESET_AFTER_S
+                    and state["limit"] > PAGE):
+                state["limit"] = PAGE
+                state["left_at"] = 0.0
+                refresh()
+        except Exception:
+            pass
 
     search.on("keydown.enter", _new_search)
     search.on("clear", _new_search)
     desc_toggle.on("update:model-value", _new_search)
-    ui.timer(1.5, _scroll_watch)
+    scroll_timer = ui.timer(2.0, _scroll_watch)
     ui.timer(10.0, _idle_watch)
     refresh()
