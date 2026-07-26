@@ -1281,7 +1281,13 @@ def render_setup_tab():
         sources_set = set(cfg["sources"])
         with ui.row().style("gap: 14px; align-items: center;"):
             linkedin_cb = ui.checkbox("LinkedIn", value=("linkedin" in sources_set))
-            indeed_cb = ui.checkbox("Indeed", value=("indeed" in sources_set))
+            # jobspy's Indeed scraper came back empty across 21 broad terms,
+            # so it's off and greyed rather than quietly returning nothing
+            indeed_cb = ui.checkbox("Indeed", value=False)
+            indeed_cb.disable()
+            indeed_cb.tooltip("Disabled: the Indeed scraper isn't returning "
+                              "results at the moment.")
+            indeed_cb.style("opacity: .45;")
             # YC startups are company-based, scraped separately from JobSpy sites.
             yc_cb = ui.checkbox("Y Combinator startups", value=bool(cfg.get("use_yc")))
             yc_remote_cb = ui.checkbox("YC remote only",

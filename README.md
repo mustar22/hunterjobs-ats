@@ -33,7 +33,7 @@
 
 A local Python app that reads job listings so you don't have to. It scrapes them, judges each one against your profile, and for the ones worth your time it researches the company and digs up real people to contact. Everything runs on your machine against your own LLM key, stored in a plain SQLite file. No accounts, no cloud, no SaaS.
 
-Sources: LinkedIn, Indeed, Y Combinator startups (scraped straight off each company's ATS board), and the monthly Hacker News "Who is Hiring?" thread. The UI is a desktop dashboard: Jobs / Applied / Market Analyzer / Logs / Setup. Pick your sources, pick a backend (Gemini, Claude, Gemma, OpenAI, OpenRouter, or a local LM Studio model), paste your profile, hit Run. Jobs stream in as they're judged.
+Sources: LinkedIn, Y Combinator startups (scraped straight off each company's ATS board), and the monthly Hacker News "Who is Hiring?" thread. (Indeed is wired up but currently disabled - jobspy's Indeed scraper stopped returning anything, so it's greyed out rather than pretending.) The UI is a desktop dashboard: Jobs / Applied / Market Analyzer / Logs / Setup. Pick your sources, pick a backend (Gemini, Claude, Gemma, OpenAI, OpenRouter, or a local LM Studio model), paste your profile, hit Run. Jobs stream in as they're judged.
 
 > **Work in progress.** Most of it works. Some bits are clanky. Feedback welcome.
 
@@ -96,7 +96,7 @@ Both Brains talk to a local SQLite database (WAL mode + FTS5 for full-text searc
 
 HunterJobs pulls from four sources, mix-and-match in the Setup tab - each tagged with a colored badge in the job list so you can see at a glance where a listing came from (LinkedIn blue, Indeed navy, YC red-orange, HN orange-yellow):
 
-- **LinkedIn** and **Indeed** - via [python-jobspy](https://github.com/cullenwatson/JobSpy), term-based search against your search terms.
+- **LinkedIn** - via [python-jobspy](https://github.com/cullenwatson/JobSpy), term-based search against your search terms. **Indeed** goes through the same library but is disabled right now: it came back empty across 21 broad terms, so the toggle is greyed until that's fixed.
 - **Y Combinator startups** *(v0.3)* - powered by my companion package [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper). It pulls currently-hiring YC companies from the public [yc-oss](https://github.com/yc-oss/api) dataset, filters them down to small early-stage startups (configurable team-size cap), and scrapes jobs straight from each company's ATS board (Greenhouse / Lever / Ashby), falling back to the Work-at-a-Startup postings on the company's public YC profile page when there's no discoverable ATS - **~100% of hiring companies covered**, no auth. These are the kinds of roles that rarely make it to LinkedIn.
 - **Hacker News "Who is Hiring?"** *(new in v0.4.3)* - finds the newest monthly thread via the free HN Algolia + Firebase APIs (no auth) and parses each top-level comment into a job. Regex pulls the easy fields; the raw comment becomes the description Stage 1 judges.
 
@@ -163,7 +163,7 @@ You only need a `GOOGLE_API_KEY` to start - get one free at https://aistudio.goo
 Open the **Setup** tab and:
 
 1. Paste your profile into the **Profile** textarea. Be specific. Stack, years of experience, salary floor, location constraints, hard nos. The richer this is, the better Stage 1 filters.
-2. Pick your **sources** - LinkedIn, Indeed, Y Combinator startups, and/or Hacker News "Who is Hiring?". For YC you can set a max team size (to target small startups) and a YC-specific freshness window ("YC max hours old", default 720); YC and HN each have a remote-only toggle. The global "Max hours old" governs LinkedIn/Indeed/HN only.
+2. Pick your **sources** - LinkedIn, Y Combinator startups, and/or Hacker News "Who is Hiring?". For YC you can set a max team size (to target small startups) and a YC-specific freshness window ("YC max hours old", default 720); YC and HN each have a remote-only toggle. The global "Max hours old" governs LinkedIn/Indeed/HN only.
 3. Edit **Search Terms** - one per line. These get passed to JobSpy as LinkedIn/Indeed queries. (YC scrapes whole companies, so Stage 1's LLM does the matching there.)
 4. Edit the **Hard Rejects** keyword list. Anything matched here gets auto-BAD without burning an LLM call. Default list catches the obvious staffing/recruiting/US-only stuff. You can export/import this as a `.txt` to share with others.
 5. Pick your backends. Brain 1's Stage 1 and Enrichment are set separately, and every picker is live - it asks the provider what it serves today rather than reading a list I hardcoded and forgot to update. Defaults are sensible: Gemma 4 for Brain 1, Gemini Flash for Brain 2. On Google you can pick either family; Gemma is the free tier (Google may train on what you send it), Gemini is paid and they don't.
