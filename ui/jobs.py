@@ -564,7 +564,12 @@ def render_split_intel(row: dict, refresh_list_fn):
             ui.html('<div style="font-size:11.5px; font-weight:700; '
                     'letter-spacing:.06em; color:var(--text-dim);">'
                     'YOUR RESEARCH</div>')
-            if row.get("gemma2_done"):
+            # the pipeline reuses seeded research instead of paying for it
+            # again, so an identical summary means this is still MY read,
+            # not yours — offer the button rather than pretend otherwise
+            same_as_seed = ((row.get("company_summary") or "").strip()
+                            == (seed.get("company_summary") or "").strip())
+            if row.get("gemma2_done") and not same_as_seed:
                 _render_intel_body(row.get("company_summary"),
                                    row.get("company_size"),
                                    row.get("real_stack"),

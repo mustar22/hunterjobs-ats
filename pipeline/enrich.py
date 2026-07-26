@@ -235,6 +235,31 @@ _SYSTEM = (
 )
 
 
+def _seed_research(conn, key: str) -> dict | None:
+    """Research imported from hunterjobsats.com, in the cache-row shape.
+    contacts/hunted stay empty so the local contact hunt still happens."""
+    if not key:
+        return None
+    try:
+        r = conn.execute(
+            """SELECT company_key, name, domain, yc_slug, company_summary,
+                      hiring_signal, real_stack, culture_flags, company_size,
+                      sources, researched_at
+               FROM companies_seed WHERE company_key = ?""", (key,)).fetchone()
+    except Exception:
+        return None                      # no seed table = nothing imported yet
+    if not r:
+        return None
+    d = dict(r)
+    for f in ("real_stack", "culture_flags", "sources"):
+        try:
+            d[f] = json.loads(d.get(f) or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d[f] = []
+    d["contacts"], d["hunted"] = [], 0
+    return d
+
+
 def enrich_company(conn, cfg: dict, company: str, domain: str,
                    client=None, model=None, backend=None,
                    yc_slug: str = "", skip_hunt: bool = False,
@@ -244,6 +269,11 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
     key = companies.company_key(company, b1.clean_domain(domain))
     ttl = int(cfg.get("company_ttl_days", 30))
     cached = None if force else companies.get_cached(conn, key, ttl)
+    if cached is None and not force:
+        # nothing of our own, but the imported seed may already know this
+        # company — reuse that research instead of paying for it again. The
+        # contact hunt still runs below; contacts are never seeded.
+        cached = _seed_research(conn, key)
     if cached and (cached.get("hunted") or skip_hunt):
         cached["from_cache"] = True
         return cached
