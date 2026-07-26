@@ -392,6 +392,25 @@ def _is_degenerate(text: str, *, min_tokens: int = 6,
         if (len(unit) >= 4 and not any(c.isspace() for c in unit)
                 and len(m.group(0)) / len(s) >= repeat_coverage):
             return True
+    # One stuttered word inside otherwise-fine prose ("...are
+    # unidentifiableifiable from the"): whole-text ratios get diluted by the
+    # normal words around it, so score long tokens on their own.
+    return any(_token_loops(t) for t in toks)
+
+
+def _token_loops(tok: str, window: int = 6, min_len: int = 14) -> bool:
+    """A single word that eats its own tail. Any repeated 6-char window inside
+    one long word is degeneration - real words don't do that (checked against
+    'internationalization', 'indistinguishable', 'telecommunications', ...)."""
+    t = "".join(c for c in tok.lower() if c.isalpha())
+    if len(t) < min_len:
+        return False
+    seen = set()
+    for i in range(len(t) - window + 1):
+        w = t[i:i + window]
+        if w in seen:
+            return True
+        seen.add(w)
     return False
 
 

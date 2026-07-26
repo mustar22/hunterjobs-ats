@@ -640,3 +640,19 @@ def test_yc_per_company_cap_stops_slug_collisions():
     pulse_rows = [r for r in rows if r["company"] == "Pulse"]
     assert len(pulse_rows) == YC_MAX_JOBS_PER_COMPANY
     assert any(r["company"] == "CleanCo" for r in rows)
+
+
+def test_degenerate_catches_one_stuttered_word_in_normal_prose():
+    from pipeline.brain1 import _is_degenerate
+    # the whole-text ratios get diluted by the surrounding normal words, so a
+    # single looped token has to be scored on its own (real MAI UK case)
+    assert _is_degenerate("No information available for the company MAI UK. "
+                          "Domain and specific business activities are "
+                          "unidentifiableifiable from the")
+    assert _is_degenerate("summary: recommendationsrecommendations for teams")
+    # long legitimate words must not trip it
+    for good in ("A telecommunications company focused on "
+                 "internationalization and interoperability.",
+                 "Provides personalization and recommendation systems.",
+                 "Indistinguishable from professional implementation work."):
+        assert not _is_degenerate(good), good
