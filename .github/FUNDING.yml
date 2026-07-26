@@ -1,0 +1,8 @@
+# GitHub Sponsors, Ko-fi and Buy Me a Coffee all settle through Stripe or
+# PayPal, and neither pays out to Uzbekistan - so these go through Dodo, the
+# same merchant of record the hosted version uses. First link lets you pick
+# your own amount; the other two are just shortcuts.
+custom:
+  - "https://checkout.dodopayments.com/buy/pdt_0Nk0N0J2419EX7YOK9Z5Z?quantity=1"
+  - "https://checkout.dodopayments.com/buy/pdt_0Nk0NUJfhOChu1P4PrfEC?quantity=1"
+  - "https://checkout.dodopayments.com/buy/pdt_0Nk0NglB5d7k13Mntq8TQ?quantity=1"

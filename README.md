@@ -287,6 +287,24 @@ Your `keys.py` is gitignored. Don't commit it.
 
 ---
 
+## Support this
+
+HunterJobs is free and stays free - Apache 2.0, runs entirely on your machine,
+no account needed. I built it because I was job hunting and the boards were
+wasting my life. If it saves you an evening, you can throw something at it:
+
+- [Name your own amount](https://checkout.dodopayments.com/buy/pdt_0Nk0N0J2419EX7YOK9Z5Z?quantity=1)
+- [Buy me a coffee](https://checkout.dodopayments.com/buy/pdt_0Nk0NUJfhOChu1P4PrfEC?quantity=1)
+- [Buy me dinner](https://checkout.dodopayments.com/buy/pdt_0Nk0NglB5d7k13Mntq8TQ?quantity=1)
+
+Entirely optional and it unlocks nothing - there is no paid version of this
+repo. If you'd rather not, starring it or opening a good issue is worth plenty.
+
+There is a [hosted version](https://hunterjobsats.com) if you'd rather not run
+it yourself: same judge, same pre-researched companies, no setup.
+
+---
+
 ## Feedback
 
 This is a tool I'm using daily for my own job hunt. If something's broken or weird, open an issue. If you have ideas, also open an issue. If you want to use it and got stuck on setup, definitely open an issue - the install docs probably need work
