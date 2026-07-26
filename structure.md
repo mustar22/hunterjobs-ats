@@ -1,7 +1,7 @@
 # HunterJobs — Code Structure
 
 Quick map of what lives where and how a scan flows. For run/setup instructions
-see README.md; for agent context see CLAUDE.md.
+see README.md.
 
 ## Layout
 
