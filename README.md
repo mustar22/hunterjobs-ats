@@ -33,7 +33,7 @@
 
 A local Python app that reads job listings so you don't have to. It scrapes them, judges each one against your profile, and for the ones worth your time it researches the company and digs up real people to contact. Everything runs on your machine against your own LLM key, stored in a plain SQLite file. No accounts, no cloud, no SaaS.
 
-Sources: LinkedIn, Y Combinator startups (scraped straight off each company's ATS board), and the monthly Hacker News "Who is Hiring?" thread. (Indeed is wired up but currently disabled - jobspy's Indeed scraper stopped returning anything, so it's greyed out rather than pretending.) The UI is a desktop dashboard: Jobs / Applied / Market Analyzer / Logs / Setup. Pick your sources, pick a backend (Gemini, Claude, Gemma, OpenAI, OpenRouter, or a local LM Studio model), paste your profile, hit Run. Jobs stream in as they're judged.
+Sources: LinkedIn, Y Combinator startups (scraped straight off each company's ATS board), and the monthly Hacker News "Who is Hiring?" thread. (Indeed is wired up but currently disabled - jobspy's Indeed scraper stopped returning anything, so it's greyed out rather than pretending.) The UI is a desktop dashboard: Jobs / Applied / Companies / Market Analyzer / Logs / Setup. Pick your sources, pick a backend (Gemini, Claude, Gemma, OpenAI, OpenRouter, or a local LM Studio model), paste your profile, hit Run. Jobs stream in as they're judged.
 
 > **Work in progress.** Most of it works. Some bits are clanky. Feedback welcome.
 
@@ -150,7 +150,7 @@ Then launch with whichever is easier:
 
 Open http://localhost:8080 in your browser. A default `config.json` is created automatically on first run - set your profile in the Setup tab.
 
-You only need a `GOOGLE_API_KEY` to start - get one free at https://aistudio.google.com/apikey. The other keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GITHUB_PAT`) are optional - `GITHUB_PAT` lets Stage 3 read GitHub org members for contacts. The YC and HN sources need no key - they use public endpoints.
+You only need a `GOOGLE_API_KEY` to start - get one free at https://aistudio.google.com/apikey. The other keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GITHUB_PAT`) are optional - `GITHUB_PAT` lets enrichment read GitHub org members for contacts. The YC and HN sources need no key - they use public endpoints.
 
 > **Running the tests?** Install pytest first: `pip install pytest`, then run `pytest` from the repo root.
 
@@ -179,7 +179,7 @@ Open the **Setup** tab and:
 
 Everything is local. Your profile, scraped jobs, notes, color labels, chat history, embeddings - all in `core/db/hunterjobs_ats.db` on your machine. The only network calls go to the LLM provider you pick (or none at all if you use LM Studio), plus the job-board/ATS endpoints when scraping.
 
-Stage 3 contact discovery only surfaces publicly available information - names and roles from company team pages, public web results, and public GitHub org membership - so you can address one real person instead of `careers@`. It guesses nothing: when there's no public signal, it says so.
+Contact discovery only surfaces publicly available information - names and roles from company team pages, public web results, and public GitHub org membership - so you can address one real person instead of `careers@`. It guesses nothing: when there's no public signal, it says so.
 
 Your `keys.py` is gitignored. Don't commit it.
 
@@ -282,6 +282,7 @@ Your `keys.py` is gitignored. Don't commit it.
 - **Companies tab** - search everything you have intel on, grows as you scroll. Useful the night before an interview
 - **Live model pickers everywhere** - no hardcoded model lists left to go stale. Every backend asks the provider what it serves today, with sensible picks pinned on top. Google now offers Gemini as well as Gemma: same client, and the paid tier means they don't train on what you send
 - **Run one step on its own** - a drawer in Setup with Scrape only and Enrich only, for when you want listings banked now and the LLM spend later
+- Test suite 133 -> 134
 
 ### Later
 

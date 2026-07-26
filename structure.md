@@ -28,17 +28,21 @@ pipeline/
   process_control.py    detached process spawn/kill + heartbeat thread
   run_brain1.py         `python -m pipeline.run_brain1` (detached entry)
   run_brain2.py         same for brain2
+  run_scrape.py         scrape only — everything lands QUEUED, judged later
+  run_enrich.py         enrich only — research companies, no scraping/judging
 
 ui/                     NiceGUI dashboard
   theme.py              logo, palette, CSS
   helpers.py            pills, fmt_ts, safe_notify, run_in_thread
   db_queries.py         dashboard-side queries (fetch_jobs, mark_applied, ...)
-  jobs.py               job row rendering + brain1 status strip
+  jobs.py               job row rendering (incl. the server-vs-yours intel split)
+  companies.py          Companies tab — searchable grid, grows on scroll
   tabs.py               Applied / Market Analyzer / Logs / Setup tabs
 
 scripts/
   setup.py              canonical install (editable HJ + YC scraper clone)
   migrate_v05.py        pre-v0.5 DB migration (id recompute, ledger backfill)
+  import_seed.py        pull the free company research + YC/HN listings
   wipe.py               clear scraped data
 ```
 
@@ -63,7 +67,9 @@ fetcher — all state (dedup, freshness, metering) lives in HunterJobs' DB.
    search-snippet fallback), team-page crawl, GitHub org, then ONE LLM call
    producing research + extracted people. Cached in `companies` (TTL
    `company_ttl_days`, default 30d), so N jobs at one company cost one pass.
-   Staffing agencies still demoted to BAD.
+   If nothing is cached locally, the imported `companies_seed` table is
+   checked before paying for research — the contact hunt still runs, since
+   contacts are never seeded. Staffing agencies still demoted to BAD.
 4. **Housekeeping**: ledger rows unseen for `ledger_expire_days` get
    `expired_at` (listing gone = probably filled); `scan_usage` row finalized.
 
@@ -72,15 +78,17 @@ fetcher — all state (dedup, freshness, metering) lives in HunterJobs' DB.
 - Job id = native id where the source has one (JobSpy numeric, `hn_<comment>`),
   else `company_title_<sha1(url)[:8]>`. Dates are never part of the id — WaaS
   dates are scrape-time estimates that drift daily.
-- `date_posted_estimated=1` marks WaaS dates; they display with `~` and are
-  ignored by the freshness window. Real dates (Greenhouse/Lever/Ashby, HN
-  comment time) still filter; HN compares at hour precision.
+- `date_posted_estimated=1` marks WaaS dates. They are never displayed: the
+  row shows "listed <first_seen>" instead, because a back-computed date from a
+  rounded relative age comes out as "2021" and that is not a fact we can
+  defend. They are ignored by the freshness window too. Real dates
+  (Greenhouse/Lever/Ashby, HN comment time) display and filter normally.
 - "New" = never judged, per the ledger. Not the posting date.
 
 ## Metering (the SaaS primitive)
 
 `max_llm_jobs_per_scan` (default 100, 0 = off) caps Stage 1 LLM verdicts per
-scan. Hard-rejects are free; Stage 2/3 are recorded but uncapped. Every scan
+scan. Hard-rejects are free; enrichment is recorded but uncapped. Every scan
 writes a `scan_usage` row (scraped / hard_rejected / judged / queued /
 stage2_runs / stage3_runs / cap / error) — the billing hook for the hosted
 version; a `user_id` column is a later `ALTER TABLE`.
