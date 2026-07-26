@@ -23,6 +23,7 @@ from pipeline.process_control import start_heartbeat
 
 from ui.theme import PALETTE_CSS, _logo_html, _LOGO_SMALL
 from ui.helpers import status_dot_class
+from ui.companies import render_companies_tab
 from ui.jobs import render_jobs_tab
 from ui.tabs import (
     render_applied_tab, render_market_tab, render_logs_tab, render_setup_tab,
@@ -85,6 +86,7 @@ def index():
     with ui.tabs().classes("w-full") as tabs:
         t_jobs    = ui.tab("Jobs")
         t_applied = ui.tab("Applied")
+        t_companies = ui.tab("Companies")
         t_market  = ui.tab("Market Analyzer")
         t_logs    = ui.tab("Logs")
         t_setup   = ui.tab("Setup")
@@ -103,6 +105,12 @@ def index():
         # ──────────────────────────────────────────────────────────────────────
         with ui.tab_panel(t_applied):
             render_applied_tab()
+
+        # ──────────────────────────────────────────────────────────────────────
+        # COMPANIES TAB
+        # ──────────────────────────────────────────────────────────────────────
+        with ui.tab_panel(t_companies):
+            render_companies_tab(is_active=lambda: tabs.value == "Companies")
 
         # ──────────────────────────────────────────────────────────────────────
         # MARKET ANALYZER TAB
