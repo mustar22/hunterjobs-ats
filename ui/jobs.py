@@ -423,7 +423,7 @@ def render_job_row(row: dict, refresh_list_fn):
                 )
 
         with _sticky_expansion(row["id"], "Company Intel", "intel").classes("w-full"):
-            render_company_intel(row, refresh_list_fn)
+            render_split_intel(row, refresh_list_fn)
 
         with _sticky_expansion(row["id"], "Similar Past Applications", "similar").classes("w-full"):
             render_similar_applications(row)
@@ -477,6 +477,101 @@ def _render_apply_button(row: dict, refresh_list_fn):
         ).classes("btn-ghost").style(
             "font-size: 12px; color: var(--bad); border-color: var(--bad);"
         )
+
+
+def _seed_intel(company: str, domain: str) -> dict | None:
+    """The hosted pool's read on this company, if it was ever imported."""
+    from core.companies import company_key
+    from core.database import get_db_connection
+    key = company_key(company or "", brain1.clean_domain(domain or ""))
+    if not key:
+        return None
+    conn = get_db_connection()
+    try:
+        r = conn.execute("SELECT * FROM companies_seed WHERE company_key = ?",
+                         (key,)).fetchone()
+    except Exception:
+        return None                       # table not created yet (pre-import)
+    finally:
+        conn.close()
+    return dict(r) if r else None
+
+
+def _render_intel_body(summary, size, stack_raw, flags_raw, sources_raw,
+                       researched_at):
+    """One column of company intel, same shape whoever researched it."""
+    ui.html(f'<div style="font-size:13px; line-height:1.55;">'
+            f'{_esc(summary) or "—"}</div>')
+    bits = []
+    if size:
+        bits.append(f'Size: <span class="mono" style="color:var(--text);">'
+                    f'{_esc(size)}</span>')
+    try:
+        stack = json.loads(stack_raw or "[]")
+    except (json.JSONDecodeError, TypeError):
+        stack = []
+    if stack:
+        bits.append(f'Stack: <span class="mono" style="color:var(--text);">'
+                    f'{_esc(" · ".join(map(str, stack)))}</span>')
+    if bits:
+        ui.html(f'<div style="margin-top:6px; font-size:12px; '
+                f'color:var(--text-dim);">{" · ".join(bits)}</div>')
+    try:
+        flags = json.loads(flags_raw or "[]")
+    except (json.JSONDecodeError, TypeError):
+        flags = []
+    if flags:
+        ui.html(f'<div style="margin-top:6px; font-size:12px; '
+                f'color:var(--maybe);">⚠ {_esc(" · ".join(map(str, flags)))}</div>')
+    try:
+        srcs = json.loads(sources_raw or "[]")
+    except (json.JSONDecodeError, TypeError):
+        srcs = []
+    links = " · ".join(
+        f'<a href="{_esc(s["url"])}" target="_blank" style="color:var(--accent); '
+        f'text-decoration:none;">{_esc(s.get("label") or "source")} ↗</a>'
+        for s in srcs if isinstance(s, dict) and s.get("url"))
+    tail = []
+    if links:
+        tail.append(f"read from: {links}")
+    if researched_at:
+        tail.append(_esc(fmt_ts(researched_at, 10)))
+    if tail:
+        ui.html(f'<div style="margin-top:8px; font-size:11.5px; '
+                f'color:var(--text-faint);">{" · ".join(tail)}</div>')
+
+
+def render_split_intel(row: dict, refresh_list_fn):
+    """Server intel on the left, your own on the right. Two independent reads
+    of the same company - where they disagree is worth a look."""
+    seed = _seed_intel(row.get("company") or "", row.get("domain") or "")
+    if not seed:
+        render_company_intel(row, refresh_list_fn)     # nothing to compare to
+        return
+    with ui.row().classes("w-full").style(
+            "gap:12px; align-items:stretch; flex-wrap:wrap;"):
+        with ui.column().style("flex:1; min-width:260px; gap:4px;"):
+            ui.html('<div style="font-size:11.5px; font-weight:700; '
+                    'letter-spacing:.06em; color:var(--accent);">'
+                    'SERVER INTEL</div>')
+            _render_intel_body(seed.get("company_summary"),
+                               seed.get("company_size"), seed.get("real_stack"),
+                               seed.get("culture_flags"), seed.get("sources"),
+                               seed.get("researched_at"))
+        with ui.column().style("flex:1; min-width:260px; gap:4px; "
+                               "border-left:1px solid var(--border); "
+                               "padding-left:12px;"):
+            ui.html('<div style="font-size:11.5px; font-weight:700; '
+                    'letter-spacing:.06em; color:var(--text-dim);">'
+                    'YOUR RESEARCH</div>')
+            if row.get("gemma2_done"):
+                _render_intel_body(row.get("company_summary"),
+                                   row.get("company_size"),
+                                   row.get("real_stack"),
+                                   row.get("culture_flags"),
+                                   row.get("intel_sources"), None)
+            else:
+                render_company_intel(row, refresh_list_fn)
 
 
 def render_company_intel(row: dict, refresh_list_fn):

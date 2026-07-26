@@ -176,6 +176,27 @@ CREATE TABLE IF NOT EXISTS companies (
 );
 """
 
+# Company research imported from hunterjobsats.com — kept in its own table so
+# it never overwrites what you researched yourself. Same shape as `companies`
+# minus contacts/hunted (those are yours to find, on your own keys), which also
+# means a job can show both reads side by side and you can see where we differ.
+COMPANIES_SEED_TABLE = """
+CREATE TABLE IF NOT EXISTS companies_seed (
+    company_key     TEXT PRIMARY KEY,
+    name            TEXT,
+    domain          TEXT,
+    yc_slug         TEXT,
+    company_summary TEXT,
+    hiring_signal   TEXT,
+    real_stack      TEXT,
+    culture_flags   TEXT,
+    company_size    TEXT,
+    sources         TEXT DEFAULT '',
+    researched_at   TEXT,
+    imported_at     TEXT
+);
+"""
+
 # Per-scan usage record — future billing hook (user_id = later ALTER TABLE).
 SCAN_USAGE_TABLE = """
 CREATE TABLE IF NOT EXISTS scan_usage (
@@ -242,6 +263,7 @@ def init_db() -> None:
     c.execute(SEEN_JOBS_TABLE)
     c.execute(SEEN_JOBS_INDEX)
     c.execute(COMPANIES_TABLE)
+    c.execute(COMPANIES_SEED_TABLE)
     c.execute(SCAN_USAGE_TABLE)
     c.execute(FTS_TABLE)
     for trig in TRIGGERS:

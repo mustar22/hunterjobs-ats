@@ -819,6 +819,40 @@ def render_setup_tab():
                 on_change=on_theme_change,
             ).style("min-width: 220px;")
 
+        ui.html('<div class="section-title">Free company research</div>')
+        ui.html('<div style="font-size:12px; color:var(--text-dim); '
+                'margin-bottom:8px;">Pull down the companies already '
+                'researched on hunterjobsats.com - what they build, their '
+                'stack, hiring signal, staffing-agency flags. Skips hundreds '
+                'of LLM calls on your first scans. No contacts come with it; '
+                'those stay yours to hunt on your own keys. It lands in its '
+                'own table, so nothing you researched is overwritten.</div>')
+        seed_status = ui.label("").style("font-size:12px; color:var(--text-dim);")
+
+        async def _parse_server_db():
+            from ui.helpers import run_in_thread
+            import scripts.import_seed as imp
+            seed_btn.props("loading")
+            seed_status.set_text("downloading…")
+            try:
+                path = await run_in_thread(imp._fetch, imp.SEED_URL)
+                c = await run_in_thread(imp.import_seed, path, False)
+                seed_status.set_text(
+                    f"{c['total']} companies on hand - {c['new']} new, "
+                    f"{c['updated']} updated this time")
+                ui.notify(f"Imported: {c['new']} new, {c['updated']} updated.",
+                          type="positive")
+            except Exception as e:
+                seed_status.set_text(f"failed: {e}")
+                ui.notify(f"Import failed: {e}", type="negative")
+            finally:
+                seed_btn.props(remove="loading")
+
+        seed_btn = ui.button("Parse server DB", on_click=_parse_server_db)\
+            .props("unelevated")\
+            .style("background:#ff9540 !important; color:#1b1b22; "
+                   "font-weight:600;")
+
         ui.html('<div class="section-title">API Keys</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
@@ -1509,6 +1543,38 @@ def render_setup_tab():
 
         ui.button("Save Settings", on_click=do_save).classes("btn-primary")\
             .style("margin-top: 12px; width: 200px;")
+
+        # ── Run one half of the pipeline ────────────────────────────────────────
+        with ui.expansion("Run one step on its own")\
+                .classes("w-full").style("margin-top: 16px;"):
+            ui.html('<div style="font-size:12px; color:var(--text-dim); '
+                    'margin-bottom:10px;">A normal run scrapes, judges and '
+                    'researches in one go. Sometimes you want just one of '
+                    'those - bank listings now and spend the LLM budget '
+                    'later, or research companies without pulling anything '
+                    'new. Both run detached, so you can leave this tab.</div>')
+            with ui.row().style("gap: 10px; flex-wrap: wrap;"):
+                ui.button(
+                    "Scrape only",
+                    on_click=lambda _: (spawn_detached("pipeline.run_scrape"),
+                                        ui.notify("Scraping. Everything lands "
+                                                  "as QUEUED for the next "
+                                                  "run.", type="positive")))\
+                    .props("unelevated")\
+                    .style("background:#2dd4bf !important; color:#10201e; "
+                           "font-weight:600;")
+                ui.button(
+                    "Enrich only",
+                    on_click=lambda _: (spawn_detached("pipeline.run_enrich"),
+                                        ui.notify("Researching companies. "
+                                                  "Cache-first, so only new "
+                                                  "ones cost calls.",
+                                                  type="positive")))\
+                    .props("unelevated")\
+                    .style("background:#60a5fa !important; color:#0d1b2e; "
+                           "font-weight:600;")
+            ui.html('<div style="font-size:11.5px; color:var(--text-faint); '
+                    'margin-top:8px;">Watch the Logs tab for progress.</div>')
 
         # ── Embeddings (RAG) ────────────────────────────────────────────────────
         ui.html('<div class="section-title" style="margin-top: 24px;">Embeddings (RAG)</div>')

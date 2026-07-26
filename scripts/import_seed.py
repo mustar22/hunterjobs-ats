@@ -9,11 +9,11 @@ company costume. This pulls that down so your first scans don't re-research
 companies that are already known.
 
 What it does NOT bring: contacts. Those are personal data and they're yours to
-hunt, on your keys, from your machine - seeded rows come in with the contact
-hunt still pending, so enrichment will look for people the normal way.
+hunt, on your keys, from your machine.
 
-Your own research always wins: a local row is only replaced when the seed's
-copy is genuinely newer.
+It lands in its own `companies_seed` table and never touches `companies`, so
+your own research is never overwritten - and a job can show both reads next to
+each other. If mine and yours disagree, that's worth seeing.
 
 Usage:  python scripts/import_seed.py [--url URL] [--file PATH] [--dry-run]
 """
@@ -24,6 +24,7 @@ import argparse
 import sqlite3
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -48,48 +49,62 @@ def _fetch(url: str) -> Path:
     return tmp
 
 
-def main(url: str, file: str | None, dry_run: bool) -> None:
-    path = Path(file) if file else _fetch(url)
+def import_seed(path: Path, dry_run: bool = False) -> dict:
+    """Load a seed .db into companies_seed. Returns counts (also used by the
+    Setup button, which is why this is a function and not just __main__)."""
     seed = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     seed.row_factory = sqlite3.Row
     rows = seed.execute(
         f"SELECT {', '.join(_FIELDS)} FROM companies_seed").fetchall()
     seed.close()
-    print(f"[*] seed holds {len(rows)} researched companies")
 
     init_db()
     conn = get_db_connection()
-    mine = {r[0]: (r[1] or "") for r in
-            conn.execute("SELECT company_key, researched_at FROM companies")}
+    have = {r[0]: (r[1] or "") for r in
+            conn.execute("SELECT company_key, researched_at FROM companies_seed")}
+    mine = {r[0] for r in conn.execute("SELECT company_key FROM companies")}
 
-    new = refreshed = kept = 0
+    new = updated = same = 0
+    now = datetime.now(timezone.utc).isoformat()
     for r in rows:
         key = r["company_key"]
-        if key not in mine:
+        if key not in have:
             new += 1
-        elif (r["researched_at"] or "") > mine[key]:
-            refreshed += 1        # seed knows something newer than we do
+        elif (r["researched_at"] or "") > have[key]:
+            updated += 1
         else:
-            kept += 1             # ours is newer or equal: leave it alone
+            same += 1
             continue
         if dry_run:
             continue
         conn.execute(
-            f"""INSERT INTO companies ({', '.join(_FIELDS)}, contacts, hunted)
-                VALUES ({', '.join('?' for _ in _FIELDS)}, '[]', 0)
+            f"""INSERT INTO companies_seed ({', '.join(_FIELDS)}, imported_at)
+                VALUES ({', '.join('?' for _ in _FIELDS)}, ?)
                 ON CONFLICT(company_key) DO UPDATE SET
-                  {', '.join(f'{f}=excluded.{f}' for f in _FIELDS[1:])}""",
-            tuple(r[f] for f in _FIELDS))
+                  {', '.join(f'{f}=excluded.{f}' for f in _FIELDS[1:])},
+                  imported_at=excluded.imported_at""",
+            (*(r[f] for f in _FIELDS), now))
     if not dry_run:
         conn.commit()
+    total = conn.execute("SELECT COUNT(*) FROM companies_seed").fetchone()[0]
     conn.close()
+    return {"in_seed": len(rows), "new": new, "updated": updated,
+            "unchanged": same, "total": total,
+            "also_mine": len({r["company_key"] for r in rows} & mine)}
 
+
+def main(url: str, file: str | None, dry_run: bool) -> None:
+    path = Path(file) if file else _fetch(url)
+    c = import_seed(path, dry_run)
     verb = "would import" if dry_run else "imported"
-    print(f"[*] {verb}: {new} new, {refreshed} refreshed, {kept} left alone "
-          f"(yours were newer)")
+    print(f"[*] seed holds {c['in_seed']} researched companies")
+    print(f"[*] {verb}: {c['new']} new, {c['updated']} updated, "
+          f"{c['unchanged']} already current")
+    if c["also_mine"]:
+        print(f"[*] {c['also_mine']} of them you have researched yourself too "
+              f"- both reads are kept, you can compare on the job")
     if not dry_run:
-        print("[*] done - contacts stay unhunted, your next scan finds those "
-              "on your own keys")
+        print("[*] done - no contacts came along, those are yours to hunt")
 
 
 if __name__ == "__main__":
