@@ -165,8 +165,9 @@ Open the **Setup** tab and:
 2. Pick your **sources** - LinkedIn, Indeed, Y Combinator startups, and/or Hacker News "Who is Hiring?". For YC you can set a max team size (to target small startups) and a YC-specific freshness window ("YC max hours old", default 720); YC and HN each have a remote-only toggle. The global "Max hours old" governs LinkedIn/Indeed/HN only.
 3. Edit **Search Terms** - one per line. These get passed to JobSpy as LinkedIn/Indeed queries. (YC scrapes whole companies, so Stage 1's LLM does the matching there.)
 4. Edit the **Hard Rejects** keyword list. Anything matched here gets auto-BAD without burning an LLM call. Default list catches the obvious staffing/recruiting/US-only stuff. You can export/import this as a `.txt` to share with others.
-5. Pick your backends. Brain 1's Stage 1 and Stages 2/3 are set separately; on Gemma, each stage gets its own model picker. Defaults are sensible - Gemma 4 for Brain 1, Gemini Flash for Brain 2.
-6. (Optional) Hit **Backfill embeddings** to enable "similar past applications" over jobs you scraped before the RAG feature existed.
+5. Pick your backends. Brain 1's Stage 1 and Enrichment are set separately, and every picker is live - it asks the provider what it serves today rather than reading a list I hardcoded and forgot to update. Defaults are sensible: Gemma 4 for Brain 1, Gemini Flash for Brain 2. On Google you can pick either family; Gemma is the free tier (Google may train on what you send it), Gemini is paid and they don't.
+6. **Strongly recommended: add a `TAVILY_API_KEY` or `SERPER_API_KEY`** (both have free tiers). The keyless fallback works from some connections and not others - datacenter IPs get starved and several countries get captcha-walled, and when search silently returns nothing the company research quietly gets much worse. I found this the hard way: 92% of one enrichment run came back with no sources read. With a key it was 0%.
+7. (Optional) Hit **Backfill embeddings** to enable "similar past applications" over jobs you scraped before the RAG feature existed.
 
 ![Market Analyzer](screenshots/market_analyzer.png)
 
