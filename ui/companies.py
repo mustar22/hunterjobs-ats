@@ -41,17 +41,24 @@ def _rows(query: str, search_desc: bool, limit: int) -> tuple[list, int]:
         else:
             where += " AND name LIKE ?"
             args = [like]
+    # the seed lands in its own table so it can never overwrite your research -
+    # which also means this tab has to read BOTH or a fresh clone shows nothing.
+    # yours wins on a key collision; the rest come through flagged as seeded.
+    cols = ("name, domain, company_summary, hiring_signal, real_stack, "
+            "culture_flags, company_size, sources, researched_at")
+    both = f"""SELECT {cols}, contacts, hunted, 0 AS seeded
+                 FROM companies WHERE {where}
+               UNION ALL
+               SELECT {cols}, NULL AS contacts, 0 AS hunted, 1 AS seeded
+                 FROM companies_seed WHERE {where}
+                   AND company_key NOT IN (SELECT company_key FROM companies)"""
     conn = get_db_connection()
     try:
         total = conn.execute(
-            f"SELECT COUNT(*) FROM companies WHERE {where}", args).fetchone()[0]
+            f"SELECT COUNT(*) FROM ({both})", (*args, *args)).fetchone()[0]
         rows = conn.execute(
-            f"""SELECT name, domain, company_summary, hiring_signal, real_stack,
-                       culture_flags, company_size, sources, researched_at,
-                       contacts, hunted
-                FROM companies WHERE {where}
-                ORDER BY researched_at DESC LIMIT ?""",
-            (*args, limit)).fetchall()
+            f"{both} ORDER BY researched_at DESC LIMIT ?",
+            (*args, *args, limit)).fetchall()
     finally:
         conn.close()
     return rows, total
@@ -96,7 +103,7 @@ def render_companies_tab(is_active=None):
             for r in rows:
                 flags = _loads(r["culture_flags"], [])
                 staffing = _is_staffing_agency(flags, r["company_summary"] or "")
-                seeded = not r["hunted"] and (r["contacts"] or "[]") in ("", "[]")
+                seeded = bool(r["seeded"])
                 with ui.element("div").classes("card").style(
                         "display:flex; flex-direction:column; gap:6px; "
                         "min-width:0;"):
