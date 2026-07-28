@@ -21,6 +21,7 @@ from html import unescape
 import requests
 
 import core.companies as companies
+import core.domains as domains
 from core.schemas import CompanyEnrichment
 import pipeline.brain1 as b1
 
@@ -280,6 +281,18 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
 
     yc = fetch_yc_company(yc_slug) if yc_slug else None
 
+    # LinkedIn hands us a name and nothing else, and without a domain every
+    # step below (site read, team crawl, github) is blind and falls through to
+    # a paid search. Resolve one for free first; unverified stays empty.
+    resolved_text = ""
+    if not b1.clean_domain(domain):
+        if yc and (yc.get("website") or ""):
+            domain = yc["website"]
+        else:
+            found, resolved_text = domains.resolve(company, b1.scrape_markdown)
+            if found:
+                domain = found
+
     # contact hunt (network-only, no LLM): skipped when the posting already
     # carries an email — founders from YC still ride along for free
     team, gh = [], []
@@ -310,8 +323,13 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
         result = dict(cached)
         sources = (cached.get("sources") or []) or sources
     else:
-        site_text, site_tag, site_urls = gather_site_content(company, domain,
-                                                             client, model, backend)
+        if _fetch_ok(resolved_text):
+            # verify() already downloaded this page — don't pay for it twice
+            site_text, site_tag = resolved_text, "website"
+            site_urls = [f"https://{b1.clean_domain(domain)}"]
+        else:
+            site_text, site_tag, site_urls = gather_site_content(
+                company, domain, client, model, backend)
         label = "Company site" if site_tag == "website" else "Web search"
         sources += [{"label": label, "url": u} for u in site_urls]
         prompt = _build_prompt(company, domain, yc, site_text, site_tag)
