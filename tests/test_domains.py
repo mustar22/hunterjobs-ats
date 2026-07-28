@@ -92,3 +92,38 @@ class TestResolve:
 
     def test_blank_name_short_circuits(self):
         assert domains.resolve("  ", _fetch({})) == ("", "")
+
+
+class TestGuessFallback:
+    def test_guesses_dotcom_when_suggest_is_dead(self, monkeypatch):
+        # the whole point: HubSpot could switch autocomplete off tomorrow
+        monkeypatch.setattr(domains, "suggest", lambda n: [])
+        domains._cache.clear()
+        body = "Monterail builds software. " * 40
+        dom, text = domains.resolve("Monterail", _fetch({"monterail.com": body}))
+        assert dom == "monterail.com" and "Monterail" in text
+
+    def test_never_guesses_alternate_tlds(self, monkeypatch):
+        # openai.co is a parked lookalike; guessing past .com resolved WRONG
+        # companies in live testing, so only .com is allowed
+        monkeypatch.setattr(domains, "suggest", lambda n: [])
+        domains._cache.clear()
+        squatter = "OpenAI is great, buy this domain. " * 40
+        dom, _ = domains.resolve("OpenAI", _fetch({"openai.co": squatter,
+                                                   "openai.ai": squatter}))
+        assert dom == ""
+
+    def test_does_not_guess_for_multiword_names(self, monkeypatch):
+        monkeypatch.setattr(domains, "suggest", lambda n: [])
+        domains._cache.clear()
+        dom, _ = domains.resolve(
+            "Emerging Travel Group",
+            _fetch({"emerging.com": "Emerging Travel Group " * 40}))
+        assert dom == ""
+
+    def test_guess_still_has_to_verify(self, monkeypatch):
+        monkeypatch.setattr(domains, "suggest", lambda n: [])
+        domains._cache.clear()
+        dom, _ = domains.resolve(
+            "Acme", _fetch({"acme.com": "We sell industrial pumps " * 40}))
+        assert dom == ""

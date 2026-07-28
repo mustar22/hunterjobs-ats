@@ -122,7 +122,7 @@ def resolve(name: str, fetch) -> tuple[str, str]:
             cached = _cache[key]
             return (cached or ""), ""      # text not cached, only the verdict
 
-    found, text = "", ""
+    found, text, how = "", "", ""
     for cand in suggest(name)[:3]:
         dom = (cand.get("domain") or "").strip().lower()
         if not dom:
@@ -131,11 +131,35 @@ def resolve(name: str, fetch) -> tuple[str, str]:
             continue
         ok, page = verify(dom, name, fetch)
         if ok:
-            found, text = dom, page
+            found, text, how = dom, page, "suggest"
             break
+
+    if not found:
+        found, text = _guess_dotcom(name, fetch)
+        how = "guess"
 
     with _lock:
         _cache[key] = found or None
     if found:
-        log.info(f"[domains] {name!r} -> {found} (keyless, verified)")
+        log.info(f"[domains] {name!r} -> {found} ({how}, verified)")
     return found, text
+
+
+def _guess_dotcom(name: str, fetch) -> tuple[str, str]:
+    """Vendor-free floor: a one-word company usually owns <word>.com.
+
+    .com ONLY, deliberately. Trying .io/.ai/.co as well resolved more names but
+    resolved them WRONG - alternate TLDs are squatter territory and they carry
+    the brand word, so name-matching waves them through. Measured live:
+    'OpenAI' matched openai.co (a parked lookalike, not OpenAI) and 'Prima'
+    matched prima.ai. Restricted to .com, every hit in the same sample was the
+    real company. Fewer answers, no wrong ones.
+
+    This exists so the resolver keeps working when the suggest endpoint doesn't:
+    Clearbit's name-to-domain API was sunset in 2025 and autocomplete is now an
+    unsupported HubSpot leftover that could vanish without notice."""
+    toks = _tokens(name)
+    if len(toks) != 1:
+        return "", ""              # multi-word names are too varied to guess
+    ok, page = verify(f"{next(iter(toks))}.com", name, fetch)
+    return (f"{next(iter(toks))}.com", page) if ok else ("", "")
