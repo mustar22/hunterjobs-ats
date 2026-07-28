@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.8.0-9d6fff" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.8.5-9d6fff" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
   <img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-orange" />
   <img alt="tests" src="https://github.com/mustar22/hunterjobs-ats/actions/workflows/test.yml/badge.svg" />
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <sub><strong>v0.8.0 just shipped</strong> - one button pulls down a few thousand companies I already researched plus YC/HN listings to judge, and every model picker is live now. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
+  <sub><strong>v0.8.5 just shipped</strong> - one button pulls down a few thousand companies I already researched plus YC/HN listings to judge, every model picker is live, and company domains now resolve for free so a search key is optional far more often. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
 </p>
 
 ---
@@ -168,7 +168,7 @@ Open the **Setup** tab and:
 4. Edit the **Hard Rejects** keyword list. Anything matched here gets auto-BAD without burning an LLM call. Default list catches the obvious staffing/recruiting/US-only stuff. You can export/import this as a `.txt` to share with others.
 5. Pick your backends. Brain 1's Stage 1 and Enrichment are set separately, and every picker is live - it asks the provider what it serves today rather than reading a list I hardcoded and forgot to update. Defaults are sensible: Gemma 4 for Brain 1, Gemini Flash for Brain 2. On Google you can pick either family; Gemma is the free tier (Google may train on what you send it), Gemini is paid and they don't.
 6. **Fastest start: hit the orange "Parse server DB" button** at the top of Setup. It pulls down ~1,900 companies I've already researched plus ~3,100 YC and Hacker News listings, so your first run has something to judge and skips the research bill on companies already known. Nothing in it is judged for you - your profile decides. It brings no contacts and no LinkedIn/Indeed listings; hunt and scrape those yourself.
-7. **Strongly recommended: add a `TAVILY_API_KEY` or `SERPER_API_KEY`** (both have free tiers). The keyless fallback works from some connections and not others - datacenter IPs get starved and several countries get captcha-walled, and when search silently returns nothing the company research quietly gets much worse. I found this the hard way: 92% of one enrichment run came back with no sources read. With a key it was 0%.
+7. **Recommended: add a `TAVILY_API_KEY` or `SERPER_API_KEY`** (both have free tiers). The keyless fallback works from some connections and not others - datacenter IPs get starved and several countries get captcha-walled, and when search silently returns nothing the company research quietly gets much worse. I found this the hard way: 92% of one enrichment run came back with no sources read. With a key it was 0%. As of v0.8.5 most company domains resolve for free before search is consulted at all, so this matters less than it did - but the companies that *don't* resolve are exactly the obscure ones where research is worth most.
 8. (Optional) Hit **Backfill embeddings** to enable "similar past applications" over jobs you scraped before the RAG feature existed.
 
 ![Market Analyzer](screenshots/market_analyzer.png)
@@ -188,7 +188,7 @@ Your `keys.py` is gitignored. Don't commit it.
 ## Known limitations
 
 - **JobSpy can be flaky** - LinkedIn occasionally rate-limits, and JobSpy 1.1.82 has a bug where it mis-parses some listings' locations into an invalid-country error that aborts the whole scrape. HunterJobs patches around that at runtime (see the comment block in `pipeline/brain1.py`), but a search term can still occasionally produce nothing on a given day.
-- **YC dates are approximate for WaaS-fallback jobs** - companies without a discoverable ATS board only expose rounded relative ages ("5 months"), so `date_posted` there is an estimate. As of v0.5 these are flagged, rendered as `~date`, and never used for freshness decisions - the first-seen ledger decides what's new.
+- **YC WaaS-fallback jobs have no real posted date** - companies without a discoverable ATS board only expose rounded relative ages ("5 months"). Rather than show a date I back-computed and can't defend, those listings say `listed <when I first saw it>` - which is the only thing I actually know. The first-seen ledger decides what's new.
 - **LinkedIn doesn't always return a posting date or location** - some rows show blank for those. That's upstream data, not a bug.
 - **Local models < 20B params chat poorly with tools.** They'll echo the tool result back into their text. Snapshot generation with local models is fine; chat works best with Gemini or Claude.
 - **Contact discovery is best-effort.** Team pages vary wildly, GitHub org membership is often private, and permuted emails are educated guesses (marked as such). Often the honest answer is "no public contact found" - that's by design, not a failure. Use the per-person email search on the few people who matter.
@@ -197,6 +197,18 @@ Your `keys.py` is gitignored. Don't commit it.
 ---
 
 ## Changelog & Roadmap
+
+### v0.8.5 - shipped
+
+- **Parse server DB** - one orange button in Setup pulls down everything already researched on [hunterjobsats.com](https://hunterjobsats.com): ~1,900 companies (what they build, real stack, hiring signal, staffing-agency flags) plus ~3,100 YC and Hacker News listings to judge. Your first run has something to chew on and skips the research bill on companies that are already known
+- **What the seed will never contain**: contacts, my verdicts, or LinkedIn/Indeed listings. Contacts are personal data and yours to hunt on your own keys. Verdicts depend on your profile, not mine, so everything arrives QUEUED. And redistributing LinkedIn text is the line between analysing public postings and running a listings database - scrape those yourself, it takes twenty minutes
+- **Both reads survive** - imported research lands in its own table, so it never overwrites yours. Each job shows SERVER INTEL beside YOUR RESEARCH; where they disagree is worth a look
+- **Companies tab** - search everything you have intel on, grows as you scroll. Useful the night before an interview
+- **Live model pickers everywhere** - no hardcoded model lists left to go stale. Every backend asks the provider what it serves today, with sensible picks pinned on top. Google now offers Gemini as well as Gemma: same client, and the paid tier means they don't train on what you send
+- **Run one step on its own** - a drawer in Setup with Scrape only and Enrich only, for when you want listings banked now and the LLM spend later
+- **Free domain resolution** - LinkedIn hands over a company name and nothing else, so 98% of newly-seen companies had no domain and every one of them burned a paid web search just to find a homepage. Names now resolve to a domain for free, and nothing is trusted until the page says the company's name back: a one-word company must own the domain label outright, and only `.com` is ever guessed because `.io`/`.ai`/`.co` lookalikes are squatter territory (`openai.co` is not OpenAI). 13 of 20 real cases resolve with no search call at all, which also means a search key is optional far more often
+- **Companies tab reads the seed** - it only ever queried your own research, so anyone whose companies came from the imported seed - which is every new install - saw an empty grid. It now shows both, yours winning on a clash, seeded rows labelled SERVER INTEL
+- Test suite 133 -> 152
 
 ### v0.7.0 - shipped
 
@@ -273,16 +285,6 @@ Your `keys.py` is gitignored. Don't commit it.
 - **Manual "Move to BAD"** button on GOOD/MAYBE jobs
 - **pytest suite + GitHub Actions CI** - green badge above
 - **Hardened JobSpy scraping** - runtime fix for the 1.1.82 invalid-country crash that aborted scrapes containing foreign-location listings
-
-### v0.8.0 - shipped
-
-- **Parse server DB** - one orange button in Setup pulls down everything already researched on [hunterjobsats.com](https://hunterjobsats.com): ~1,900 companies (what they build, real stack, hiring signal, staffing-agency flags) plus ~3,100 YC and Hacker News listings to judge. Your first run has something to chew on and skips the research bill on companies that are already known
-- **What the seed will never contain**: contacts, my verdicts, or LinkedIn/Indeed listings. Contacts are personal data and yours to hunt on your own keys. Verdicts depend on your profile, not mine, so everything arrives QUEUED. And redistributing LinkedIn text is the line between analysing public postings and running a listings database - scrape those yourself, it takes twenty minutes
-- **Both reads survive** - imported research lands in its own table, so it never overwrites yours. Each job shows SERVER INTEL beside YOUR RESEARCH; where they disagree is worth a look
-- **Companies tab** - search everything you have intel on, grows as you scroll. Useful the night before an interview
-- **Live model pickers everywhere** - no hardcoded model lists left to go stale. Every backend asks the provider what it serves today, with sensible picks pinned on top. Google now offers Gemini as well as Gemma: same client, and the paid tier means they don't train on what you send
-- **Run one step on its own** - a drawer in Setup with Scrape only and Enrich only, for when you want listings banked now and the LLM spend later
-- Test suite 133 -> 134
 
 ### Later
 
