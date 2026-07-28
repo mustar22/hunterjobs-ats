@@ -148,12 +148,18 @@ def resolve(name: str, fetch) -> tuple[str, str]:
 def _guess_dotcom(name: str, fetch) -> tuple[str, str]:
     """Vendor-free floor: a one-word company usually owns <word>.com.
 
-    .com ONLY, deliberately. Trying .io/.ai/.co as well resolved more names but
-    resolved them WRONG - alternate TLDs are squatter territory and they carry
-    the brand word, so name-matching waves them through. Measured live:
-    'OpenAI' matched openai.co (a parked lookalike, not OpenAI) and 'Prima'
-    matched prima.ai. Restricted to .com, every hit in the same sample was the
-    real company. Fewer answers, no wrong ones.
+    .com ONLY, and the reason is the whole trick: .com is the most contested
+    namespace there is, so a one-word company that owns <word>.com is almost
+    certainly the principal holder of that name. Ownership IS the disambiguator.
+
+    That property transfers to no other TLD. Trying .io/.ai/.co resolved more
+    names and resolved them wrong - not to squatters, which is what I assumed,
+    but to OTHER REAL COMPANIES sharing the name: prima.ai is a manufacturing
+    firm, kira.io sells a phone agent, neither is the employer we were asked
+    about. No page-quality check can separate those, because nothing is wrong
+    with the page. Don't extend this list without a second signal tying the
+    site to the actual listing - and the listings don't carry one (checked:
+    2 of 1,694).
 
     This exists so the resolver keeps working when the suggest endpoint doesn't:
     Clearbit's name-to-domain API was sunset in 2025 and autocomplete is now an

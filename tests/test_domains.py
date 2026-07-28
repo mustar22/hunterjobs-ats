@@ -104,13 +104,14 @@ class TestGuessFallback:
         assert dom == "monterail.com" and "Monterail" in text
 
     def test_never_guesses_alternate_tlds(self, monkeypatch):
-        # openai.co is a parked lookalike; guessing past .com resolved WRONG
-        # companies in live testing, so only .com is allowed
+        # not squatters - OTHER REAL COMPANIES with the same name. prima.ai is
+        # a manufacturer, kira.io sells a phone agent. Nothing is wrong with
+        # those pages, which is exactly why no page check can catch them.
         monkeypatch.setattr(domains, "suggest", lambda n: [])
         domains._cache.clear()
-        squatter = "OpenAI is great, buy this domain. " * 40
-        dom, _ = domains.resolve("OpenAI", _fetch({"openai.co": squatter,
-                                                   "openai.ai": squatter}))
+        other_co = "OpenAI Systems - industrial coatings since 1974. " * 40
+        dom, _ = domains.resolve("OpenAI", _fetch({"openai.co": other_co,
+                                                   "openai.ai": other_co}))
         assert dom == ""
 
     def test_does_not_guess_for_multiword_names(self, monkeypatch):
