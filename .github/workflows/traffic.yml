@@ -24,19 +24,27 @@ jobs:
 
       - name: Accumulate clones + views
         env:
-          # the traffic API needs push access; the default token usually has it,
-          # but set TRAFFIC_TOKEN (a PAT with repo scope) if you get a 403
-          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN || secrets.GITHUB_TOKEN }}
+          # TRAFFIC_TOKEN is REQUIRED, not a fallback: the traffic API needs
+          # admin/push access and GITHUB_TOKEN can never have it — there's no
+          # `administration` permission for workflow tokens. Use a fine-grained
+          # PAT with Administration: Read on this repo.
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          [ -n "${GH_TOKEN:-}" ] || { echo "::error::TRAFFIC_TOKEN secret is not set"; exit 1; }
           mkdir -p traffic
           [ -f traffic/totals.json ] || echo '{"clones":0,"views":0,"seen":{}}' > traffic/totals.json
 
+          # -f so a 403 is a failure, not a file full of error JSON. Silently
+          # recording 0 for a month is worse than a red X on day one.
           for kind in clones views; do
-            curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
                  -H "Accept: application/vnd.github+json" \
-                 "https://api.github.com/repos/$REPO/traffic/$kind" > "$kind.json" || echo '{}' > "$kind.json"
+                 "https://api.github.com/repos/$REPO/traffic/$kind" > "$kind.json" \
+              || { echo "::error::traffic/$kind failed - is TRAFFIC_TOKEN valid and admin-read?"; exit 1; }
+            python3 -c "import json,sys; d=json.load(open('$kind.json')); sys.exit(0 if '$kind' in d else 1)" \
+              || { echo "::error::traffic/$kind returned no '$kind' key: $(head -c 200 $kind.json)"; exit 1; }
           done
 
           python3 - <<'PY'
@@ -49,13 +57,22 @@ jobs:
                   # keyed per day, last value wins: overlapping 14-day windows
                   # can't double count, and today's partial count self-corrects
                   # when tomorrow's poll reports the finished number
-                  t["seen"][f"{kind}:{day['timestamp'][:10]}"] = day["count"]
+                  #
+                  # uniques, not count: raw clones are mostly bots. 211 clones
+                  # against 4 unique page views means CI and mirrors, not people,
+                  # and a badge saying 211 would imply 211 humans.
+                  #
+                  # summing DAILY uniques still over-counts anyone who clones on
+                  # more than one day (14-day sum: 87 vs the API's deduped 78).
+                  # Unavoidable if we want a running total past the 14-day
+                  # window, and it errs far smaller than the raw count.
+                  t["seen"][f"{kind}:{day['timestamp'][:10]}"] = day["uniques"]
               t[kind] = sum(v for k, v in t["seen"].items()
                             if k.startswith(f"{kind}:"))
           t["updated"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
           # shields.io endpoint format, so the badge needs no third-party service
           pathlib.Path("traffic/clones-badge.json").write_text(json.dumps({
-              "schemaVersion": 1, "label": "clones", "color": "9d6fff",
+              "schemaVersion": 1, "label": "unique clones", "color": "9d6fff",
               "message": f'{t["clones"]} since Jul 2026'}))
           pathlib.Path("traffic/totals.json").write_text(json.dumps(t, indent=1))
           print("clones:", t["clones"], "views:", t["views"])
