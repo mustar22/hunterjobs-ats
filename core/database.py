@@ -148,7 +148,8 @@ CREATE TABLE IF NOT EXISTS seen_jobs (
     first_seen_at TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
     judged_at     TEXT,               -- NULL = never entered Stage 1
-    expired_at    TEXT                -- set when not seen for ledger_expire_days
+    expired_at    TEXT,               -- set when the listing is judged gone
+    miss_count    INTEGER DEFAULT 0   -- consecutive census passes that missed it
 );
 """
 
@@ -294,6 +295,11 @@ def init_db() -> None:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_def}")
 
     # same lightweight migration for companies (younger table, same idea)
+    # census sources count consecutive misses before declaring a listing dead
+    c.execute("PRAGMA table_info(seen_jobs)")
+    if "miss_count" not in {row[1] for row in c.fetchall()}:
+        c.execute("ALTER TABLE seen_jobs ADD COLUMN miss_count INTEGER DEFAULT 0")
+
     c.execute("PRAGMA table_info(companies)")
     comp_cols = {row[1] for row in c.fetchall()}
     if "sources" not in comp_cols:

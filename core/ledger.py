@@ -91,3 +91,44 @@ def backfill_from_jobs(conn: sqlite3.Connection,
     )
     conn.commit()
     return cur.rowcount
+
+
+def census_pass(conn: sqlite3.Connection, source: str, run_started: str,
+                max_misses: int = 2, now: str | None = None) -> tuple[int, int]:
+    """Call ONLY after a COMPLETE pass of `source`. Rows not sighted since
+    `run_started` take a miss; `max_misses` in a row means gone.
+
+    Never call this on a partial run — with `--no-yc`, or a pass that died
+    halfway, every listing looks absent and you would bury the whole source.
+    Two misses is what makes one flaky run cost nothing.
+
+    Returns (newly_missed, newly_expired)."""
+    ts = now or _now_iso()
+    conn.execute("UPDATE seen_jobs SET miss_count = 0 "
+                 "WHERE source = ? AND last_seen_at >= ?", (source, run_started))
+    missed = conn.execute(
+        "UPDATE seen_jobs SET miss_count = COALESCE(miss_count, 0) + 1 "
+        "WHERE source = ? AND last_seen_at < ? AND expired_at IS NULL",
+        (source, run_started)).rowcount
+    expired = conn.execute(
+        "UPDATE seen_jobs SET expired_at = ? "
+        "WHERE source = ? AND COALESCE(miss_count, 0) >= ? AND expired_at IS NULL",
+        (ts, source, max_misses)).rowcount
+    conn.commit()
+    return missed, expired
+
+
+def mark_dead(conn: sqlite3.Connection, job_keys: list[str],
+              now: str | None = None) -> int:
+    """Expire listings we KNOW are gone — no inference. HN deletes come back
+    as empty comments, so death is reported rather than guessed."""
+    if not job_keys:
+        return 0
+    ts = now or _now_iso()
+    ph = ",".join("?" for _ in job_keys)
+    n = conn.execute(
+        f"UPDATE seen_jobs SET expired_at = ? "
+        f"WHERE job_key IN ({ph}) AND expired_at IS NULL",
+        (ts, *job_keys)).rowcount
+    conn.commit()
+    return n

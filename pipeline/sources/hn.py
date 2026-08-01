@@ -204,7 +204,7 @@ def _fetch_many(ids: list[int], session: requests.Session) -> list[dict | None]:
 LOSS_ALARM = 0.10
 
 
-def scrape_hn_jobs(cfg: dict) -> list[dict]:
+def scrape_hn_jobs(cfg: dict, stats: dict | None = None) -> list[dict]:
     """Scrape the current 'Who is hiring?' thread into JobSpy-shaped rows.
 
     Logs the whole funnel — ids → fetched → parsed — because every stage here
@@ -229,6 +229,7 @@ def scrape_hn_jobs(cfg: dict) -> list[dict]:
     thread_date = thread.get("date", "")
 
     rows: list[dict] = []
+    dead: list[str] = []
     fetched = failed = 0
     try:
         with requests.Session() as session:
@@ -245,6 +246,10 @@ def scrape_hn_jobs(cfg: dict) -> list[dict]:
                 failed += 1
                 continue
             fetched += 1
+            # dead/deleted come back empty — a reported death, not an inference
+            if item.get("deleted") or item.get("dead"):
+                dead.append(f"hn_{item.get('id')}")  # matches seen_jobs.job_key
+                continue
             row = parse_comment(item, thread_date)
             if row:
                 rows.append(row)
@@ -253,7 +258,10 @@ def scrape_hn_jobs(cfg: dict) -> list[dict]:
 
     log.info(f"[hn] {total} ids -> {len(kids)} kept -> {fetched} fetched "
              f"({failed} failed) -> {len(rows)} parsed "
-             f"({fetched - len(rows)} unparseable)")
+             f"({len(dead)} dead, {fetched - len(rows) - len(dead)} unparseable)")
+    if stats is not None:
+        stats.update(ids=total, fetched=fetched, failed=failed,
+                     parsed=len(rows), dead=dead)
     if failed and failed / max(len(kids), 1) > LOSS_ALARM:
         log.error(f"[hn] lost {failed}/{len(kids)} to fetch failures — "
                   f"this run under-reports the thread, don't trust the count")

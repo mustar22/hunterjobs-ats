@@ -121,3 +121,55 @@ class TestBackfill:
         assert conn.execute(
             "SELECT first_seen_at FROM seen_jobs WHERE job_key='a'"
         ).fetchone()["first_seen_at"] == "2026-07-01T00:00:00+00:00"
+
+
+class TestCensusPass:
+    """Absence only means death when the source actually ran a full pass, and
+    only after two of them. One flaky run must cost nothing."""
+
+    def _seen(self, conn, key, source, last_seen):
+        conn.execute(
+            "INSERT INTO seen_jobs (job_key, source, first_seen_at, last_seen_at) "
+            "VALUES (?,?,?,?)", (key, source, last_seen, last_seen))
+        conn.commit()
+
+    def test_one_miss_does_not_expire(self, conn):
+        self._seen(conn, "j1", "yc", "2026-07-01T00:00:00+00:00")
+        missed, expired = ledger.census_pass(conn, "yc", "2026-07-02T00:00:00+00:00")
+        assert (missed, expired) == (1, 0)
+        assert conn.execute("SELECT expired_at FROM seen_jobs WHERE job_key='j1'"
+                            ).fetchone()["expired_at"] is None
+
+    def test_two_consecutive_misses_expire(self, conn):
+        self._seen(conn, "j1", "yc", "2026-07-01T00:00:00+00:00")
+        ledger.census_pass(conn, "yc", "2026-07-02T00:00:00+00:00")
+        _, expired = ledger.census_pass(conn, "yc", "2026-07-03T00:00:00+00:00")
+        assert expired == 1
+
+    def test_being_seen_again_resets_the_count(self, conn):
+        self._seen(conn, "j1", "yc", "2026-07-01T00:00:00+00:00")
+        ledger.census_pass(conn, "yc", "2026-07-02T00:00:00+00:00")   # miss 1
+        ledger.upsert_seen(conn, "j1", "yc")                          # back on the board
+        _, expired = ledger.census_pass(conn, "yc", "2026-07-03T00:00:00+00:00")
+        assert expired == 0
+        assert conn.execute("SELECT miss_count FROM seen_jobs WHERE job_key='j1'"
+                            ).fetchone()["miss_count"] == 0
+
+    def test_other_sources_are_untouched(self, conn):
+        self._seen(conn, "li1", "linkedin", "2026-07-01T00:00:00+00:00")
+        ledger.census_pass(conn, "yc", "2026-07-03T00:00:00+00:00")
+        assert conn.execute("SELECT miss_count FROM seen_jobs WHERE job_key='li1'"
+                            ).fetchone()["miss_count"] == 0
+
+
+class TestMarkDead:
+    def test_confirmed_death_expires_immediately(self, conn):
+        conn.execute("INSERT INTO seen_jobs (job_key, source, first_seen_at, "
+                     "last_seen_at) VALUES ('h1','hn','2026-07-01','2026-07-01')")
+        conn.commit()
+        assert ledger.mark_dead(conn, ["h1"]) == 1
+        assert conn.execute("SELECT expired_at FROM seen_jobs WHERE job_key='h1'"
+                            ).fetchone()["expired_at"] is not None
+
+    def test_empty_list_is_a_no_op(self, conn):
+        assert ledger.mark_dead(conn, []) == 0

@@ -1573,14 +1573,20 @@ def run_brain1() -> None:
 
     try:
         # drain QUEUED overflow from previous scans first, FIFO, same cap
+        # skip listings the ledger already buried — the server has always done
+        # this, the local app was marking them expired and judging them anyway
         if enabled_srcs:
             ph = ",".join("?" for _ in enabled_srcs)
             queued_rows = conn.execute(
-                f"SELECT * FROM jobs WHERE verdict='QUEUED' AND source IN ({ph}) "
-                f"ORDER BY date_scraped ASC", enabled_srcs).fetchall()
+                f"SELECT j.* FROM jobs j LEFT JOIN seen_jobs s ON s.job_key = j.id "
+                f"WHERE j.verdict='QUEUED' AND j.source IN ({ph}) "
+                f"AND s.expired_at IS NULL ORDER BY j.date_scraped ASC",
+                enabled_srcs).fetchall()
         else:
             queued_rows = conn.execute(
-                "SELECT * FROM jobs WHERE verdict='QUEUED' ORDER BY date_scraped ASC"
+                "SELECT j.* FROM jobs j LEFT JOIN seen_jobs s ON s.job_key = j.id "
+                "WHERE j.verdict='QUEUED' AND s.expired_at IS NULL "
+                "ORDER BY j.date_scraped ASC"
             ).fetchall()
         if queued_rows:
             log.info(f"[stage1] draining {len(queued_rows)} queued jobs from previous scans")
