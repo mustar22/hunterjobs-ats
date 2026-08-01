@@ -195,10 +195,23 @@ def parse_comment(item: dict | None, thread_date: str = "") -> dict | None:
     }
 
 
+def _fetch_many(ids: list[int], session: requests.Session) -> list[dict | None]:
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return list(pool.map(lambda c: _fetch_item(c, session), ids))
+
+
+# above any real thread; exists so a runaway can't hang, not to trim data
+LOSS_ALARM = 0.10
+
+
 def scrape_hn_jobs(cfg: dict) -> list[dict]:
     """Scrape the current 'Who is hiring?' thread into JobSpy-shaped rows.
-    Bounded by hn_max_jobs. Any failure is non-fatal → returns [] (mirrors YC)."""
-    max_jobs = int(cfg.get("hn_max_jobs", 200))
+
+    Logs the whole funnel — ids → fetched → parsed — because every stage here
+    used to drop rows silently: the cap trimmed a 311-comment thread to 200,
+    failed fetches returned None, and unparseable comments vanished. One run
+    reported 92 of 187 and nothing said otherwise."""
+    max_jobs = int(cfg.get("hn_max_jobs", 1000))
     thread = find_latest_hiring_thread()
     if not thread:
         return []
@@ -207,18 +220,41 @@ def scrape_hn_jobs(cfg: dict) -> list[dict]:
     if not kids:
         log.warning("[hn] thread has no comments (skipping)")
         return []
-    kids = kids[:max_jobs]
+
+    total = len(kids)
+    if total > max_jobs:
+        log.warning(f"[hn] thread has {total} listings but hn_max_jobs={max_jobs} — "
+                    f"DROPPING {total - max_jobs}. Raise it to read the whole thread.")
+        kids = kids[:max_jobs]
     thread_date = thread.get("date", "")
 
     rows: list[dict] = []
+    fetched = failed = 0
     try:
         with requests.Session() as session:
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                items = pool.map(lambda c: _fetch_item(c, session), kids)
+            items = _fetch_many(kids, session)
+            # HN comments don't disappear, so a None is our failure — retry once
+            missing = [k for k, it in zip(kids, items) if it is None]
+            if missing:
+                log.info(f"[hn] {len(missing)} fetches failed, retrying once")
+                for k, it in zip(missing, _fetch_many(missing, session)):
+                    if it is not None:
+                        items[kids.index(k)] = it
         for item in items:
+            if item is None:
+                failed += 1
+                continue
+            fetched += 1
             row = parse_comment(item, thread_date)
             if row:
                 rows.append(row)
     except Exception as e:
         log.warning(f"[hn] comment fetch failed (returning what we have): {e}")
+
+    log.info(f"[hn] {total} ids -> {len(kids)} kept -> {fetched} fetched "
+             f"({failed} failed) -> {len(rows)} parsed "
+             f"({fetched - len(rows)} unparseable)")
+    if failed and failed / max(len(kids), 1) > LOSS_ALARM:
+        log.error(f"[hn] lost {failed}/{len(kids)} to fetch failures — "
+                  f"this run under-reports the thread, don't trust the count")
     return rows

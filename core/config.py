@@ -49,7 +49,7 @@ DEFAULT_CONFIG = {
     # Hacker News "Who is hiring?" — single monthly thread, scraped via free APIs.
     "use_hn": False,
     "hn_remote_only": True,
-    "hn_max_jobs": 200,
+    "hn_max_jobs": 1000,   # a guard, not a trim: threads run 300+
     "results_wanted": 100,
     "hours_old": 72,
     # Per-scan cap on Stage 1 LLM verdicts (0 = unlimited). Hard-rejects and
