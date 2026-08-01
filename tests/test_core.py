@@ -656,3 +656,51 @@ def test_degenerate_catches_one_stuttered_word_in_normal_prose():
                  "Provides personalization and recommendation systems.",
                  "Indistinguishable from professional implementation work."):
         assert not _is_degenerate(good), good
+
+
+class TestPerStageModelPicking:
+    """Stage 1 reads thousands of listings, enrichment runs rarely - they need
+    different models. They used to share one key per backend, so the Setup
+    advice ('light models for Stage 1') was impossible to follow off Google."""
+
+    KEYS = {"google": "x", "anthropic": "y", "openrouter": "z"}
+
+    def _model(self, cfg, stage):
+        from pipeline.brain1 import get_gemma_client_for_stage
+        return get_gemma_client_for_stage(cfg, self.KEYS, stage)[1]
+
+    def test_each_stage_gets_its_own_claude(self):
+        cfg = {"brain1_stage1_backend": "anthropic",
+               "brain1_stage23_backend": "anthropic",
+               "brain1_stage1_anthropic_model": "claude-haiku-4-5",
+               "brain1_stage23_anthropic_model": "claude-sonnet-4-6"}
+        assert self._model(cfg, "stage1") == "claude-haiku-4-5"
+        assert self._model(cfg, "stage2") == "claude-sonnet-4-6"
+
+    def test_old_shared_key_still_works(self):
+        # existing installs must not silently lose their configured model
+        cfg = {"brain1_stage1_backend": "anthropic",
+               "brain1_stage23_backend": "anthropic",
+               "brain1_anthropic_model": "claude-opus-4-1"}
+        assert self._model(cfg, "stage1") == "claude-opus-4-1"
+        assert self._model(cfg, "stage2") == "claude-opus-4-1"
+
+    def test_per_stage_beats_the_shared_key(self):
+        cfg = {"brain1_stage1_backend": "anthropic",
+               "brain1_anthropic_model": "claude-opus-4-1",
+               "brain1_stage1_anthropic_model": "claude-haiku-4-5"}
+        assert self._model(cfg, "stage1") == "claude-haiku-4-5"
+
+    def test_openrouter_is_per_stage_too(self):
+        cfg = {"brain1_stage1_backend": "openrouter",
+               "brain1_stage23_backend": "openrouter",
+               "brain1_stage1_openrouter_model": "meta-llama/llama-3-8b",
+               "brain1_stage23_openrouter_model": "anthropic/claude-3.5-sonnet"}
+        assert self._model(cfg, "stage1") == "meta-llama/llama-3-8b"
+        assert self._model(cfg, "stage2") == "anthropic/claude-3.5-sonnet"
+
+    def test_falls_back_to_a_default_when_nothing_is_set(self):
+        assert self._model({"brain1_stage1_backend": "openrouter"},
+                           "stage1") == "openrouter/free"
+        assert self._model({"brain1_stage1_backend": "anthropic"},
+                           "stage1") == "claude-haiku-4-5"

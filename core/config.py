@@ -68,10 +68,17 @@ DEFAULT_CONFIG = {
     "brain1_stage2_gemma_model": "gemma-4-26b-a4b-it",
     "brain1_stage3_gemma_model": "gemma-4-26b-a4b-it",
     "brain1_lmstudio_url": "http://localhost:1234/v1",
+    # per-stage model for every backend; un-prefixed keys are the old shared
+    # ones, still read as a fallback
     "brain1_lmstudio_model": "",
+    "brain1_stage1_lmstudio_model": "",
+    "brain1_stage23_lmstudio_model": "",
     "brain1_openrouter_model": "openrouter/free",
-    # Stage 1 reads thousands of listings — light Claude by design; picker in Setup.
+    "brain1_stage1_openrouter_model": "",
+    "brain1_stage23_openrouter_model": "",
     "brain1_anthropic_model": "claude-haiku-4-5",
+    "brain1_stage1_anthropic_model": "",
+    "brain1_stage23_anthropic_model": "",
     "brain2_backend": "gemini",
     # Brain 2 persona/voice (snapshot + chat). Empty = no persona injected.
     "brain2_persona": "",

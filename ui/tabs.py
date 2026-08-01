@@ -1330,6 +1330,24 @@ def render_setup_tab():
                 cfg.get("brain1_stage1_gemma_model", "gemma-4-26b-a4b-it"),
                 "Stage 1 model", keys.get("google", ""),
             )
+        with ui.column().style("gap: 8px;") as b1_or_s1_box:
+            b1_s1_or_model = _openrouter_model_picker(
+                cfg.get("brain1_stage1_openrouter_model")
+                or cfg.get("brain1_openrouter_model", "openrouter/free"),
+                "Stage 1 OpenRouter model",
+            )
+        with ui.column().style("gap: 8px;") as b1_ant_s1_box:
+            b1_s1_ant_model = _anthropic_model_picker(
+                cfg.get("brain1_stage1_anthropic_model")
+                or cfg.get("brain1_anthropic_model", "claude-haiku-4-5"),
+                "Stage 1 Claude model", keys.get("anthropic", ""),
+            )
+        with ui.column().style("gap: 8px;") as b1_lms_s1_box:
+            b1_s1_lms_model = ui.input(
+                label="Stage 1 LM Studio model (blank = auto-detect)",
+                value=cfg.get("brain1_stage1_lmstudio_model")
+                or cfg.get("brain1_lmstudio_model", ""))\
+                .props("outlined dense").style("width: 360px;")
 
         ui.html('<div class="section-title">Brain 1 — Enrichment Backend (company research + outreach)</div>')
         ui.html(
@@ -1355,54 +1373,41 @@ def render_setup_tab():
                 cfg.get("brain1_stage3_gemma_model", "gemma-4-26b-a4b-it"),
                 "Outreach model (contacts + drafts)", keys.get("google", ""),
             )
+        with ui.column().style("gap: 8px;") as b1_or_s23_box:
+            b1_s23_or_model = _openrouter_model_picker(
+                cfg.get("brain1_stage23_openrouter_model")
+                or cfg.get("brain1_openrouter_model", "openrouter/free"),
+                "Enrichment OpenRouter model",
+            )
+        with ui.column().style("gap: 8px;") as b1_ant_s23_box:
+            b1_s23_ant_model = _anthropic_model_picker(
+                cfg.get("brain1_stage23_anthropic_model")
+                or cfg.get("brain1_anthropic_model", "claude-sonnet-4-6"),
+                "Enrichment Claude model", keys.get("anthropic", ""),
+            )
+        with ui.column().style("gap: 8px;") as b1_lms_s23_box:
+            b1_s23_lms_model = ui.input(
+                label="Enrichment LM Studio model (blank = auto-detect)",
+                value=cfg.get("brain1_stage23_lmstudio_model")
+                or cfg.get("brain1_lmstudio_model", ""))\
+                .props("outlined dense").style("width: 360px;")
 
         with ui.column().style("gap: 8px;") as b1_lmstudio_box:
-            ui.html(
-                '<div style="font-size: 12px; color: var(--text-dim); margin: 8px 0;">'
-                'LM Studio settings (shared by both stages if either is set to LM Studio):</div>'
-            )
+            # one server, so the URL is shared; the models are picked per stage
             b1_url = ui.input(label="LM Studio URL",
                               value=cfg["brain1_lmstudio_url"])\
                 .props("outlined").style("width: 360px;")
-            b1_model = ui.input(label="LM Studio model name (blank = auto-detect loaded model)",
-                                value=cfg["brain1_lmstudio_model"])\
-                .props("outlined").style("width: 360px;")
-
-        with ui.column().style("gap: 8px;") as b1_openrouter_box:
-            ui.html(
-                '<div style="font-size: 12px; color: var(--text-dim); margin: 8px 0;">'
-                'OpenRouter model (shared by both stages if either is set to OpenRouter). '
-                'Needs OPENROUTER_API_KEY in keys.py:</div>'
-            )
-            b1_openrouter_model = _openrouter_model_picker(
-                cfg.get("brain1_openrouter_model", "openrouter/free"),
-                "OpenRouter model",
-            )
-
-        with ui.column().style("gap: 8px;") as b1_anthropic_box:
-            ui.html(
-                '<div style="font-size: 12px; color: var(--text-dim); margin: 8px 0;">'
-                'Claude model (shared by both stages if either is set to Claude). '
-                'Stage 1 reads thousands of listings — light models (Haiku) are '
-                'highly recommended. Needs ANTHROPIC_API_KEY in keys.py:</div>'
-            )
-            b1_anthropic_model = _anthropic_model_picker(
-                cfg.get("brain1_anthropic_model", "claude-haiku-4-5"),
-                "Claude model", keys.get("anthropic", ""),
-            )
 
         def _refresh_b1_backend_boxes():
-            b1_lmstudio_box.set_visibility(
-                b1s1_select.value == "lmstudio" or b1s23_select.value == "lmstudio"
-            )
-            b1_openrouter_box.set_visibility(
-                b1s1_select.value == "openrouter" or b1s23_select.value == "openrouter"
-            )
-            b1_anthropic_box.set_visibility(
-                b1s1_select.value == "anthropic" or b1s23_select.value == "anthropic"
-            )
-            b1_gemma_s1_box.set_visibility(b1s1_select.value == "gemma")
-            b1_gemma_s23_box.set_visibility(b1s23_select.value == "gemma")
+            s1, s23 = b1s1_select.value, b1s23_select.value
+            # each picker sits under the stage that chose it, not at the bottom
+            for box, want in ((b1_gemma_s1_box, "gemma"), (b1_or_s1_box, "openrouter"),
+                              (b1_ant_s1_box, "anthropic"), (b1_lms_s1_box, "lmstudio")):
+                box.set_visibility(s1 == want)
+            for box, want in ((b1_gemma_s23_box, "gemma"), (b1_or_s23_box, "openrouter"),
+                              (b1_ant_s23_box, "anthropic"), (b1_lms_s23_box, "lmstudio")):
+                box.set_visibility(s23 == want)
+            b1_lmstudio_box.set_visibility("lmstudio" in (s1, s23))
 
         _refresh_b1_backend_boxes()
         b1s1_select.on("update:model-value", lambda _e: _refresh_b1_backend_boxes())
@@ -1531,9 +1536,12 @@ def render_setup_tab():
                 # Keep legacy key in sync for backwards compat (mirrors stage23 choice)
                 "brain1_backend": b1s23_select.value,
                 "brain1_lmstudio_url": b1_url.value,
-                "brain1_lmstudio_model": b1_model.value,
-                "brain1_openrouter_model": b1_openrouter_model.value,
-                "brain1_anthropic_model": (b1_anthropic_model.value or "claude-haiku-4-5").strip(),
+                "brain1_stage1_lmstudio_model": b1_s1_lms_model.value,
+                "brain1_stage23_lmstudio_model": b1_s23_lms_model.value,
+                "brain1_stage1_openrouter_model": b1_s1_or_model.value,
+                "brain1_stage23_openrouter_model": b1_s23_or_model.value,
+                "brain1_stage1_anthropic_model": (b1_s1_ant_model.value or "claude-haiku-4-5").strip(),
+                "brain1_stage23_anthropic_model": (b1_s23_ant_model.value or "claude-sonnet-4-6").strip(),
                 "brain2_backend": b2_select.value,
                 "brain2_persona": b2_persona_ta.value,
                 "brain2_gemini_model": b2_gem_model.value,

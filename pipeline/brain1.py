@@ -119,9 +119,14 @@ def get_gemma_client_for_stage(cfg: dict, keys: dict, stage_group: str):
     backend_group = "stage1" if stage_group == "stage1" else "stage23"
     backend = cfg.get(f"brain1_{backend_group}_backend") or cfg.get("brain1_backend", "gemma")
 
+    # per-stage model, falling back to the old shared key
+    def _model(name: str, default: str = "") -> str:
+        return ((cfg.get(f"brain1_{backend_group}_{name}_model")
+                 or cfg.get(f"brain1_{name}_model") or default).strip())
+
     if backend == "lmstudio":
         base_url = cfg.get("brain1_lmstudio_url", "http://localhost:1234/v1")
-        model_name = (cfg.get("brain1_lmstudio_model") or "").strip()
+        model_name = _model("lmstudio")
         if not model_name:
             try:
                 r = requests.get(f"{base_url.rstrip('/')}/models", timeout=5)
@@ -143,7 +148,7 @@ def get_gemma_client_for_stage(cfg: dict, keys: dict, stage_group: str):
         )
 
     if backend == "openrouter":
-        model_name = (cfg.get("brain1_openrouter_model") or "openrouter/free").strip()
+        model_name = _model("openrouter", "openrouter/free")
         return (
             OpenAI(base_url=OPENROUTER_URL, api_key=keys.get("openrouter", "")),
             model_name,
@@ -152,7 +157,7 @@ def get_gemma_client_for_stage(cfg: dict, keys: dict, stage_group: str):
 
     if backend == "anthropic":
         import anthropic  # lazy, same as brain2 — optional dep
-        model_name = (cfg.get("brain1_anthropic_model") or "claude-haiku-4-5").strip()
+        model_name = _model("anthropic", "claude-haiku-4-5")
         return anthropic.Anthropic(api_key=keys.get("anthropic", "")), model_name, "anthropic"
 
     # legacy 'stage23' resolves to the stage-2 model field.
