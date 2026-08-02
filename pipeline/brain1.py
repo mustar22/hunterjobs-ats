@@ -999,6 +999,29 @@ _AGENCY_MARKERS = (
 )
 
 
+def _known_agency(conn, company: str, domain: str, dismissed: set[str]) -> str:
+    """Company already researched and flagged as a staffing agency? Returns the
+    name to cite, or "". Dismissed suspects are never blocked — a wrong flag
+    must stay one dismissal away from undone, not silently eat every listing."""
+    if not (company or "").strip():
+        return ""
+    if company.strip().lower() in dismissed:
+        return ""
+    try:
+        import core.companies as _companies
+        key = _companies.company_key(company, clean_domain(domain or ""))
+        row = conn.execute(
+            "SELECT culture_flags, company_summary FROM companies WHERE company_key = ?",
+            (key,)).fetchone()
+    except Exception:
+        return ""
+    if not row:
+        return ""
+    if _is_staffing_agency(row["culture_flags"], row["company_summary"] or ""):
+        return company
+    return ""
+
+
 def _is_staffing_agency(culture_flags, summary: str) -> bool:
     """True only on agency-specific signals (places people at other companies),
     not on bare product-labeling terms."""
@@ -1363,6 +1386,9 @@ def run_brain1() -> None:
     hard_rejects = [
         t.strip() for t in cfg.get("hard_rejects", "").splitlines() if t.strip()
     ]
+    # companies the user has said are NOT agencies — never auto-blocked
+    dismissed = {c.strip().lower() for c in cfg.get("dismissed_suspects", [])
+                 if isinstance(c, str) and c.strip()}
     sources = cfg.get("sources", ["linkedin"])
     use_yc = bool(cfg.get("use_yc"))
     use_hn = bool(cfg.get("use_hn"))
@@ -1532,6 +1558,18 @@ def run_brain1() -> None:
         reject_kw = hard_reject_check(reject_text, hard_rejects)
         if reject_kw:
             insert_job_with_verdict(conn, job, "BAD", f"hard_reject: {reject_kw}")
+            counts["hard_rej"] += 1
+            meter.count("hard_rejected")
+            runner_status.patch("brain1", **counts)
+            return True
+
+        # ── known agency (free): we already paid to learn this once ──
+        # Staffing detection used to run AFTER enrichment, so every listing from
+        # a known agency cost a judge call and a research call before being
+        # demoted. Now the first one pays and the rest are free.
+        agency = _known_agency(conn, job["company"], job["domain"], dismissed)
+        if agency:
+            insert_job_with_verdict(conn, job, "BAD", f"known staffing agency: {agency}")
             counts["hard_rej"] += 1
             meter.count("hard_rejected")
             runner_status.patch("brain1", **counts)
