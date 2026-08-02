@@ -149,7 +149,8 @@ CREATE TABLE IF NOT EXISTS seen_jobs (
     last_seen_at  TEXT NOT NULL,
     judged_at     TEXT,               -- NULL = never entered Stage 1
     expired_at    TEXT,               -- set when the listing is judged gone
-    miss_count    INTEGER DEFAULT 0   -- consecutive census passes that missed it
+    miss_count    INTEGER DEFAULT 0,  -- consecutive misses (census or 404 check)
+    checked_at    TEXT                -- last direct liveness check
 );
 """
 
@@ -297,8 +298,13 @@ def init_db() -> None:
     # same lightweight migration for companies (younger table, same idea)
     # census sources count consecutive misses before declaring a listing dead
     c.execute("PRAGMA table_info(seen_jobs)")
-    if "miss_count" not in {row[1] for row in c.fetchall()}:
+    seen_cols = {row[1] for row in c.fetchall()}
+    if "miss_count" not in seen_cols:
         c.execute("ALTER TABLE seen_jobs ADD COLUMN miss_count INTEGER DEFAULT 0")
+    # when the listing was last verified alive — separate from last_seen_at,
+    # which only moves when a scrape happens to cover it
+    if "checked_at" not in seen_cols:
+        c.execute("ALTER TABLE seen_jobs ADD COLUMN checked_at TEXT")
 
     c.execute("PRAGMA table_info(companies)")
     comp_cols = {row[1] for row in c.fetchall()}

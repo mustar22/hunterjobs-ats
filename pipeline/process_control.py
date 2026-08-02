@@ -24,7 +24,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 
 # ── subprocess spawning (detached, refresh-safe) ──────────────────────────────
-def spawn_detached(module: str) -> None:
+def spawn_detached(module: str, *args: str) -> None:
     """Launch a python module (e.g. "pipeline.run_brain1") as a fully detached
     process via `python -m`. On Windows this survives parent shutdown / browser
     refresh; no console window appears.
@@ -32,7 +32,7 @@ def spawn_detached(module: str) -> None:
     We invoke with `-m <module>` and pin cwd to the repo root so the
     pipeline.* / core.* package imports resolve no matter where the dashboard
     was launched from."""
-    cmd = [sys.executable, "-m", module]
+    cmd = [sys.executable, "-m", module, *args]
     if os.name == "nt":
         flags = (
             subprocess.CREATE_NEW_PROCESS_GROUP

@@ -49,14 +49,16 @@ def _store(conn, rows, label: str) -> int:
     return new
 
 
-def run_scrape() -> dict:
+def run_scrape(only: set[str] | None = None) -> dict:
+    """`only` limits which sources run; None = whatever Setup has enabled."""
     cfg = load_config()
+    want = (lambda name: (only is None or name in only))
     init_db()
     conn = get_db_connection()
     counts = {"linkedin_indeed": 0, "hn": 0, "yc": 0}
     try:
         sources = [s for s in (cfg.get("sources") or [])
-                   if s in ("linkedin", "indeed")]
+                   if s in ("linkedin", "indeed") and want(s)]
         terms = [t.strip() for t in (cfg.get("search_terms") or "").split(",")
                  if t.strip()]
         if sources and terms:
@@ -67,11 +69,11 @@ def run_scrape() -> dict:
                 if df is not None and len(df):
                     counts["linkedin_indeed"] += _store(
                         conn, [r for _, r in df.iterrows()], f"jobspy:{term}")
-        if cfg.get("use_hn"):
+        if cfg.get("use_hn") and want("hn"):
             rows = b1.apply_yc_date_filter(hn.scrape_hn_jobs(cfg),
                                            int(cfg.get("hours_old", 720)))
             counts["hn"] = _store(conn, rows, "HN")
-        if cfg.get("use_yc"):
+        if cfg.get("use_yc") and want("yc"):
             rows = b1.apply_yc_date_filter(b1.safe_scrape_yc(cfg),
                                            int(cfg.get("yc_hours_old", 720)))
             counts["yc"] = _store(conn, rows, "YC")
@@ -83,6 +85,13 @@ def run_scrape() -> dict:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s")
-    print(run_scrape())
+    import sys
+    from pathlib import Path
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout),
+                  logging.FileHandler(Path(__file__).resolve().parent.parent
+                                      / "hunterjobs.log", encoding="utf-8")])
+    only = ({s.strip() for s in sys.argv[1].split(",") if s.strip()}
+            if len(sys.argv) > 1 else None)
+    print(run_scrape(only))

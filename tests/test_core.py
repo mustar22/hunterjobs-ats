@@ -704,3 +704,72 @@ class TestPerStageModelPicking:
                            "stage1") == "openrouter/free"
         assert self._model({"brain1_stage1_backend": "anthropic"},
                            "stage1") == "claude-haiku-4-5"
+
+
+class TestListingPulse:
+    """Nothing gets buried on one bad answer, and never because a server was
+    rude - only a repeated, explicit 'not found'."""
+
+    def _conn(self, tmp_path, monkeypatch):
+        import core.database as cdb
+        monkeypatch.setattr(cdb, "DB_PATH", tmp_path / "p.db")
+        cdb.init_db()
+        return cdb.get_db_connection()
+
+    def test_one_404_is_not_death(self, tmp_path, monkeypatch):
+        from core import ledger
+        import pipeline.listing_pulse as lp
+        conn = self._conn(tmp_path, monkeypatch)
+        ledger.upsert_seen(conn, "li-1", "linkedin")
+        monkeypatch.setattr(lp, "_check_linkedin", lambda s, k: False)
+        monkeypatch.setattr(lp.time, "sleep", lambda *_: None)
+        lp.run_pulse(conn, sources=("linkedin",), limit=10)
+        row = conn.execute("SELECT miss_count, expired_at FROM seen_jobs").fetchone()
+        assert row["miss_count"] == 1 and row["expired_at"] is None
+
+    def test_two_404s_bury_it(self, tmp_path, monkeypatch):
+        from core import ledger
+        import pipeline.listing_pulse as lp
+        conn = self._conn(tmp_path, monkeypatch)
+        ledger.upsert_seen(conn, "li-1", "linkedin")
+        monkeypatch.setattr(lp, "_check_linkedin", lambda s, k: False)
+        monkeypatch.setattr(lp.time, "sleep", lambda *_: None)
+        lp.run_pulse(conn, sources=("linkedin",), limit=10)
+        lp.run_pulse(conn, sources=("linkedin",), limit=10)
+        assert conn.execute("SELECT expired_at FROM seen_jobs"
+                            ).fetchone()["expired_at"] is not None
+
+    def test_being_alive_clears_a_previous_miss(self, tmp_path, monkeypatch):
+        from core import ledger
+        import pipeline.listing_pulse as lp
+        conn = self._conn(tmp_path, monkeypatch)
+        ledger.upsert_seen(conn, "li-1", "linkedin")
+        monkeypatch.setattr(lp.time, "sleep", lambda *_: None)
+        monkeypatch.setattr(lp, "_check_linkedin", lambda s, k: False)
+        lp.run_pulse(conn, sources=("linkedin",), limit=10)
+        monkeypatch.setattr(lp, "_check_linkedin", lambda s, k: True)
+        lp.run_pulse(conn, sources=("linkedin",), limit=10)
+        assert conn.execute("SELECT miss_count FROM seen_jobs"
+                            ).fetchone()["miss_count"] == 0
+
+    def test_rate_limit_never_counts_as_death(self, tmp_path, monkeypatch):
+        # a 429 or a timeout is 'ask again later', not 'deleted'
+        from core import ledger
+        import pipeline.listing_pulse as lp
+        conn = self._conn(tmp_path, monkeypatch)
+        ledger.upsert_seen(conn, "li-1", "linkedin")
+        monkeypatch.setattr(lp, "_check_linkedin", lambda s, k: None)
+        monkeypatch.setattr(lp.time, "sleep", lambda *_: None)
+        for _ in range(5):
+            lp.run_pulse(conn, sources=("linkedin",), limit=10)
+        row = conn.execute("SELECT miss_count, expired_at, checked_at "
+                           "FROM seen_jobs").fetchone()
+        assert row["miss_count"] == 0 and row["expired_at"] is None
+        assert row["checked_at"]        # still recorded that we looked
+
+    def test_yc_is_refused_rather_than_faked(self, tmp_path, monkeypatch):
+        from core import ledger
+        import pipeline.listing_pulse as lp
+        conn = self._conn(tmp_path, monkeypatch)
+        ledger.upsert_seen(conn, "yc-1", "yc")
+        assert lp.run_pulse(conn, sources=("yc",), limit=10) == {}

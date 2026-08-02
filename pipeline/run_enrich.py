@@ -23,21 +23,31 @@ from pipeline import enrich
 log = logging.getLogger(__name__)
 
 
-def run_enrich(days: int = 30, limit: int = 0) -> dict:
+def run_enrich(days: int = 30, limit: int = 0,
+               only: set[str] | None = None) -> dict:
     cfg = load_config()
     keys = load_keys()
     client, model, backend = b1.get_gemma_client_for_stage(cfg, keys, "stage23")
     init_db()
     conn = get_db_connection()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    # only the companies behind the sources you picked
+    src_sql = ""
+    src_args: tuple = ()
+    if only:
+        src_sql = "AND source IN (%s)" % ",".join("?" for _ in only)
+        src_args = tuple(sorted(only))
     rows = conn.execute(
-        """SELECT company, domain, MAX(COALESCE(yc_slug,'')) AS yc_slug,
-                  COUNT(*) AS n
-           FROM jobs WHERE date_scraped >= ? AND COALESCE(company,'') != ''
-           GROUP BY company, domain ORDER BY n DESC""", (cutoff,)).fetchall()
+        f"""SELECT company, domain, MAX(COALESCE(yc_slug,'')) AS yc_slug,
+                   COUNT(*) AS n
+            FROM jobs WHERE date_scraped >= ? AND COALESCE(company,'') != ''
+              {src_sql}
+            GROUP BY company, domain ORDER BY n DESC""",
+        (cutoff, *src_args)).fetchall()
     if limit:
         rows = rows[:limit]
-    log.info(f"[enrich] {len(rows)} companies seen in the last {days} days")
+    log.info(f"[enrich] {len(rows)} companies seen in the last {days} days"
+             + (f" from {sorted(only)}" if only else ""))
 
     done = cached = failed = 0
     t0 = time.time()
@@ -64,6 +74,13 @@ def run_enrich(days: int = 30, limit: int = 0) -> dict:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s")
-    print(run_enrich())
+    import sys
+    from pathlib import Path
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout),
+                  logging.FileHandler(Path(__file__).resolve().parent.parent
+                                      / "hunterjobs.log", encoding="utf-8")])
+    only = ({s.strip() for s in sys.argv[1].split(",") if s.strip()}
+            if len(sys.argv) > 1 else None)
+    print(run_enrich(only=only))

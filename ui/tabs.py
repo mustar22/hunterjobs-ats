@@ -1562,17 +1562,30 @@ def render_setup_tab():
 
         # ── Run one half of the pipeline ────────────────────────────────────────
         with ui.expansion("Run one step on its own")\
-                .classes("w-full").style("margin-top: 16px;"):
+                .classes("w-full").style(
+                    "margin-top: 16px; border: 1px solid var(--accent); "
+                    "border-radius: 10px; background: var(--accent-bg); "
+                    "box-shadow: 0 0 18px rgba(157,111,255,.22);"):
             ui.html('<div style="font-size:12px; color:var(--text-dim); '
                     'margin-bottom:10px;">A normal run scrapes, judges and '
                     'researches in one go. Sometimes you want just one of '
                     'those - bank listings now and spend the LLM budget '
                     'later, or research companies without pulling anything '
                     'new. Both run detached, so you can leave this tab.</div>')
-            with ui.row().style("gap: 10px; flex-wrap: wrap;"):
+            with ui.row().style("gap: 14px; align-items: center; flex-wrap: wrap;"):
+                ui.label("Sources:").style("font-size:12px; color:var(--text-dim);")
+                src_yc = ui.checkbox("YC", value=True).props("dense")
+                src_hn = ui.checkbox("Hacker News", value=True).props("dense")
+                src_li = ui.checkbox("LinkedIn", value=True).props("dense")
+
+            def _picked() -> str:
+                return ",".join(n for n, cb in (("yc", src_yc), ("hn", src_hn),
+                                                ("linkedin", src_li)) if cb.value)
+
+            with ui.row().style("gap: 10px; flex-wrap: wrap; margin-top: 8px;"):
                 ui.button(
                     "Scrape only",
-                    on_click=lambda _: (spawn_detached("pipeline.run_scrape"),
+                    on_click=lambda _: (spawn_detached("pipeline.run_scrape", _picked()),
                                         ui.notify("Scraping. Everything lands "
                                                   "as QUEUED for the next "
                                                   "run.", type="positive")))\
@@ -1581,7 +1594,7 @@ def render_setup_tab():
                            "font-weight:600;")
                 ui.button(
                     "Enrich only",
-                    on_click=lambda _: (spawn_detached("pipeline.run_enrich"),
+                    on_click=lambda _: (spawn_detached("pipeline.run_enrich", _picked()),
                                         ui.notify("Researching companies. "
                                                   "Cache-first, so only new "
                                                   "ones cost calls.",
@@ -1591,6 +1604,43 @@ def render_setup_tab():
                            "font-weight:600;")
             ui.html('<div style="font-size:11.5px; color:var(--text-faint); '
                     'margin-top:8px;">Watch the Logs tab for progress.</div>')
+
+            # ── Listing pulse: ask listings if they still exist ──────────────
+            ui.html('<div style="font-size:12px; color:var(--text-dim); '
+                    'margin:16px 0 8px;">Every listing you keep will outlive '
+                    'the job eventually. This asks them directly instead of '
+                    'expiring them on a timer - the ten oldest listings here '
+                    'were five weeks old and every one was still open. Never '
+                    'runs on its own; pick a source and press it. No LLM '
+                    'calls, no keys.</div>')
+            with ui.row().style("gap: 14px; align-items: center; flex-wrap: wrap;"):
+                pulse_li = ui.checkbox("LinkedIn", value=False).props("dense")
+                pulse_hn = ui.checkbox("Hacker News", value=False).props("dense")
+                pulse_n = ui.number(label="max per source", value=250,
+                                    min=10, max=5000, step=50)\
+                    .props("outlined dense").style("width: 150px;")
+
+            def _run_pulse(_=None):
+                srcs = ([("linkedin") ] if pulse_li.value else []) + \
+                       (["hn"] if pulse_hn.value else [])
+                if not srcs:
+                    ui.notify("Pick at least one source.", type="warning")
+                    return
+                spawn_detached("pipeline.run_pulse",
+                               ",".join(srcs), str(int(pulse_n.value or 250)))
+                ui.notify(f"Checking {', '.join(srcs)}. LinkedIn is paced at "
+                          f"~6s per listing on purpose - rushing it makes live "
+                          f"jobs look dead.", type="positive", timeout=8000)
+
+            ui.button("Listing pulse", on_click=_run_pulse)\
+                .props("unelevated").style(
+                    "background:#ff6fb5 !important; color:#2b0d1e; "
+                    "font-weight:700; margin-top:10px;")
+            ui.html('<div style="font-size:11.5px; color:var(--text-faint); '
+                    'margin-top:8px;">Y Combinator is not listed because its '
+                    'scrape reads every company board in full - listings that '
+                    'vanish are already caught for free during a normal run.'
+                    '</div>')
 
         # ── Embeddings (RAG) ────────────────────────────────────────────────────
         ui.html('<div class="section-title" style="margin-top: 24px;">Embeddings (RAG)</div>')
