@@ -11,7 +11,7 @@ Hacker News "Ask HN: Who is hiring?" as a job source. No auth, no LLM:
     Blank fields when unsure — nothing is fabricated.
 
 Emits JobSpy-shaped row dicts (source="hn") so HN flows through the exact same
-Stage 1 path as LinkedIn/Indeed/YC. Every network call is contained → any
+Stage 1 path as LinkedIn/YC. Every network call is contained → any
 failure returns [] / skips the item and never blocks the rest of the scrape.
 """
 

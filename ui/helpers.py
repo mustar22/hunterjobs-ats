@@ -27,6 +27,7 @@ def source_pill(source: str) -> str:
     # source -> (label, css background, text color)
     brands = {
         "linkedin": ("LinkedIn", "#0A66C2", "#fff"),
+        # Indeed is no longer scraped, but old installs still have its rows
         "indeed":   ("Indeed",   "#003A9B", "#fff"),
         "yc":       ("YC",       "linear-gradient(90deg, #ff3d00, #ff8c00)", "#fff"),
         "hn":       ("HN",       "linear-gradient(90deg, #ff8c00, #ffd000)", "#1a1300"),

@@ -1253,12 +1253,12 @@ def render_setup_tab():
             rw_in = ui.number(label="Results per term",
                               value=cfg["results_wanted"], step=10, min=10, max=200)\
                 .props("outlined").style("width: 200px;")
-            rw_in.tooltip("LinkedIn/Indeed only: listings fetched per search term. "
+            rw_in.tooltip("LinkedIn only: listings fetched per search term. "
                           "No effect on YC (whole companies) or HN (whole thread).")
             ho_in = ui.number(label="Max hours old",
                               value=cfg["hours_old"], step=12, min=12)\
                 .props("outlined").style("width: 180px;")
-            ho_in.tooltip("Freshness window for LinkedIn/Indeed/HN real dates. "
+            ho_in.tooltip("Freshness window for LinkedIn/HN real dates. "
                           "YC has its own window; estimated dates are ledger-governed.")
             cap_in = ui.number(label="LLM jobs per scan (0 = no cap)",
                                value=cfg.get("max_llm_jobs_per_scan", 100),
@@ -1281,14 +1281,7 @@ def render_setup_tab():
         sources_set = set(cfg["sources"])
         with ui.row().style("gap: 14px; align-items: center;"):
             linkedin_cb = ui.checkbox("LinkedIn", value=("linkedin" in sources_set))
-            # jobspy's Indeed scraper came back empty across 21 broad terms,
-            # so it's off and greyed rather than quietly returning nothing
-            indeed_cb = ui.checkbox("Indeed", value=False)
-            indeed_cb.disable()
-            indeed_cb.tooltip("Disabled: the Indeed scraper isn't returning "
-                              "results at the moment.")
-            indeed_cb.style("opacity: .45;")
-            # YC startups are company-based, scraped separately from JobSpy sites.
+            # YC startups are company-based, scraped per company rather than per term.
             yc_cb = ui.checkbox("Y Combinator startups", value=bool(cfg.get("use_yc")))
             yc_remote_cb = ui.checkbox("YC remote only",
                                        value=bool(cfg.get("yc_remote_only", True)))
@@ -1499,7 +1492,6 @@ def render_setup_tab():
         def do_save():
             sources = []
             if linkedin_cb.value: sources.append("linkedin")
-            if indeed_cb.value: sources.append("indeed")
             new_cfg = {
                 **cfg,
                 "use_yc": bool(yc_cb.value),

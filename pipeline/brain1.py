@@ -43,7 +43,6 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
-from jobspy import scrape_jobs
 from google import genai
 from google.genai import types
 from openai import OpenAI
@@ -52,28 +51,12 @@ from core.config import OPENROUTER_URL
 from core.database import get_db_connection, init_db
 from core.schemas import JobFilter, CompanyResearch
 from pipeline.sources import hn
+from pipeline.sources import linkedin as li
 from pipeline.metering import ScanMeter
 import core.embeddings as embeddings
 import core.ledger as ledger
 import core.runner_status as runner_status
 
-# JobSpy 1.1.82 bug: an unrecognized posting country (e.g. "moldova") raises in
-# Country.from_string() and aborts the whole scrape. LinkedIn ignores country
-# anyway, so coercing unknowns to WORLDWIDE is safe for our linkedin-only use.
-# Patched at runtime to stay portable across venvs. Remove when fixed upstream.
-from jobspy.model import Country as _JobSpyCountry
-
-_orig_country_from_string = _JobSpyCountry.from_string
-
-
-def _safe_country_from_string(country_str: str):
-    try:
-        return _orig_country_from_string(country_str)
-    except ValueError:
-        return _JobSpyCountry.WORLDWIDE
-
-
-_JobSpyCountry.from_string = staticmethod(_safe_country_from_string)
 
 # ── logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -594,7 +577,7 @@ def clean_domain(domain: str) -> str:
         .strip()
         .lower()
     )
-    # JobSpy sometimes returns junk strings as the company URL
+    # scraped company URLs are sometimes junk strings
     if d in ("", "nan", "none", "null", "n/a"):
         return ""
     # Strip www./uk./es./etc subdomain
@@ -1047,7 +1030,7 @@ JOB_INSERT_COLS = (
 
 def scraped_row_to_job(row, job_id: str = "", desc: str = "",
                        dhash: str = "") -> dict | None:
-    """Scraped row (JobSpy/YC/HN) → insertable job dict. None = unusable
+    """Scraped row (LinkedIn/YC/HN) → insertable job dict. None = unusable
     (no/short description). Also the pool-donor entry point (scrape_pool.py)."""
     desc = desc or str(row.get("description") or "")
     if not desc or len(desc) < 100:
@@ -1177,7 +1160,7 @@ def load_job(conn, job_id: str) -> dict | None:
 
 def fallback_job_id(row) -> str:
     """Build a stable, collision-free id for scraped rows that lack a native id
-    (YC listings — JobSpy rows already carry a numeric id).
+    (YC listings — LinkedIn rows already carry a numeric id).
 
     No date_posted in the id: WaaS dates are scrape-time estimates that shift
     daily, which would mint a fresh id (= fresh LLM call) every scan. The url
@@ -1190,51 +1173,35 @@ def fallback_job_id(row) -> str:
     return f"{base}_{row.get('date_posted')}"
 
 
-# ── JobSpy wrapper with defensive country retry ───────────────────────────────
-def safe_scrape(term: str, sources: list[str], results_wanted: int, hours_old: int):
-    """JobSpy occasionally injects random country strings into LinkedIn flow
-    (kenya/iceland bug in 1.1.82). Retry up to 4 times; the injected country
-    is random per-call so retrying often gets a clean call."""
-    base_kwargs = dict(
-        site_name=sources,
-        search_term=term,
-        is_remote=True,
-        results_wanted=results_wanted,
-        hours_old=hours_old,
-        linkedin_fetch_description=True,
-        location="Worldwide",
-    )
-    max_attempts = 4
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return scrape_jobs(country_indeed="worldwide", **base_kwargs)
-        except Exception as e:
-            if "Invalid country string" in str(e):
-                if attempt < max_attempts:
-                    log.warning(
-                        f"JobSpy country bug for '{term}' (attempt {attempt}/{max_attempts}), retrying"
-                    )
-                    time.sleep(1)
-                else:
-                    log.error(
-                        f"JobSpy country bug for '{term}' persisted after {max_attempts} attempts"
-                    )
-                    return None
-            else:
-                log.error(f"Scrape failed for '{term}': {e}")
-                return None
-
-
-# ── YC startups scraper (company-based, separate from JobSpy) ─────────────────
 # a seed-stage startup does not have 2,500 open roles — beyond this the ATS
 # slug almost certainly resolved to some unrelated giant (see: YC's "Pulse"
 # vs the UK healthcare staffing agency squatting greenhouse.io/pulse)
 YC_MAX_JOBS_PER_COMPANY = 150
 
 
+# ── LinkedIn term scrape ──────────────────────────────────────────────────────
+def safe_scrape(term: str, sources: list[str], results_wanted: int,
+                hours_old: int) -> list[dict]:
+    """LinkedIn listings for one term. Returns rows, not a DataFrame.
+
+    Was JobSpy; it advanced its offset by the cumulative result count (skipping
+    whole pages), stopped on the first empty page, ordered by relevance rather
+    than date, and crashed on unrecognised country strings. On the same term and
+    window our scraper returned 976 listings to its 119."""
+    if "linkedin" not in sources:
+        return []
+    stats: dict = {}
+    rows = li.scrape_linkedin_jobs(hours=hours_old, keywords=term,
+                                   limit=results_wanted or None,
+                                   stats=stats)
+    if not stats.get("complete"):
+        log.warning(f"[stage1] '{term}': coverage incomplete — {stats.get('reason')}")
+    return rows
+
+
 def yc_jobs_to_rows(yc_jobs: list[dict]) -> list[dict]:
     """Convert ycombinator_jobs_scraper output into JobSpy-style row dicts so YC
-    listings flow through the exact same Stage 1 path as LinkedIn/Indeed. YC has
+    listings flow through the exact same Stage 1 path as LinkedIn. YC has
     no salary or numeric id; we leave id=None so the downstream fallback builds a
     stable one from company/title/date."""
     per_company: dict[str, int] = {}
@@ -1337,7 +1304,7 @@ def apply_yc_date_filter(rows: list[dict], hours_old: int,
 def safe_scrape_yc(cfg: dict):
     """Scrape small early-stage YC startups once (company-based, not per-term).
     Any failure is non-fatal and returns [] — a YC error must never kill the
-    LinkedIn/Indeed scrape (mirrors the JobSpy country-bug handling)."""
+    LinkedIn scrape."""
     try:
         from ycombinator_jobs_scraper import scrape_yc_jobs
     except Exception as e:
@@ -1361,14 +1328,14 @@ def safe_scrape_yc(cfg: dict):
 
 
 # ── Source selection helpers ──────────────────────────────────────────────────
-def jobspy_enabled(sources: list[str]) -> bool:
-    """True when at least one JobSpy site (LinkedIn/Indeed) is selected.
-    An empty list is legitimate (YC-only run) and means skip the JobSpy term loop."""
-    return bool(sources)
+def linkedin_enabled(sources: list[str]) -> bool:
+    """True when LinkedIn is selected. An empty list is legitimate (YC/HN-only
+    run) and means skip the term loop entirely."""
+    return "linkedin" in (sources or [])
 
 
 def has_scrape_source(sources: list[str], use_yc: bool, use_hn: bool = False) -> bool:
-    """True when there is anything to scrape at all — JobSpy sites, YC, or HN.
+    """True when there is anything to scrape at all — LinkedIn, YC, or HN.
     When all are off there is genuinely nothing to do (vs. silently forcing LinkedIn)."""
     return bool(sources) or bool(use_yc) or bool(use_hn)
 
@@ -1428,7 +1395,7 @@ def run_brain1() -> None:
         if not pending:
             log.warning(
                 "No scrape sources enabled and no queued jobs. Nothing to do — "
-                "enable LinkedIn/Indeed, Y Combinator, or Hacker News in Setup."
+                "enable LinkedIn, Y Combinator, or Hacker News in Setup."
             )
             runner_status.start("brain1")
             runner_status.finish("brain1", error="no sources enabled")
@@ -1445,7 +1412,7 @@ def run_brain1() -> None:
     )
 
     # Watchdog: hard-kills us if the dashboard dies while we're stuck inside
-    # synchronous jobspy code that can't reach the cooperative heartbeat checks.
+    # synchronous scrape code that can't reach the cooperative heartbeat checks.
     def _watchdog():
         while True:
             time.sleep(15)
@@ -1468,7 +1435,7 @@ def run_brain1() -> None:
               "no_desc": 0, "judged": 0, "queued": 0}
 
     good_jobs: list[dict] = []
-    # Cross-source dedup by job_url (LinkedIn/Indeed/YC can overlap within a run).
+    # Cross-source dedup by job_url (LinkedIn/YC/HN can overlap within a run).
     seen_urls: set[str] = set()
 
     conn = get_db_connection()
@@ -1643,10 +1610,10 @@ def run_brain1() -> None:
 
         # YC-only run (no JobSpy sites) skips this loop — avoids an empty JobSpy call.
         scrape_terms = (list(enumerate(search_terms, 1))
-                        if not aborted and jobspy_enabled(sources)
+                        if not aborted and linkedin_enabled(sources)
                         and all(_scrape_allowed(s, s) for s in sources) else [])
         if not scrape_terms:
-            log.info("[stage1] No JobSpy sources selected; skipping LinkedIn/Indeed scrape.")
+            log.info("[stage1] LinkedIn not selected; skipping term scrape.")
         for term_idx, term in scrape_terms:
             if not runner_status.dashboard_is_alive(max_age_seconds=90):
                 log.warning("Dashboard heartbeat lost (>90s). Self-terminating.")
@@ -1657,12 +1624,12 @@ def run_brain1() -> None:
                 stage1=f"scraping '{term}' ({term_idx}/{len(search_terms)})",
             )
             log.info(f"[stage1] Scraping '{term}'")
-            df = safe_scrape(term, sources, results_wanted, hours_old)
-            if df is None or len(df) == 0:
+            rows = safe_scrape(term, sources, results_wanted, hours_old)
+            if not rows:
                 continue
 
             progress = f"({term_idx}/{len(search_terms)})"
-            for _, row in df.iterrows():
+            for row in rows:
                 if not _process_row(row, progress):
                     aborted = True
                     break

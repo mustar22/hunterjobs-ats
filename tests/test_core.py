@@ -453,20 +453,20 @@ class TestFallbackJobId:
 class TestSourceSelection:
     def test_empty_sources_with_yc_runs_yc_only_skips_jobspy(self):
         # YC-only run: nothing for JobSpy, but there IS something to scrape (YC).
-        assert brain1.jobspy_enabled([]) is False
+        assert brain1.linkedin_enabled([]) is False
         assert brain1.has_scrape_source([], True) is True
 
     def test_empty_sources_without_yc_does_nothing(self):
         # No JobSpy sites and YC off: genuinely nothing to scrape (warning + exit).
-        assert brain1.jobspy_enabled([]) is False
+        assert brain1.linkedin_enabled([]) is False
         assert brain1.has_scrape_source([], False) is False
 
-    def test_linkedin_only_still_runs_jobspy(self):
-        assert brain1.jobspy_enabled(["linkedin"]) is True
+    def test_linkedin_only_still_scrapes(self):
+        assert brain1.linkedin_enabled(["linkedin"]) is True
         assert brain1.has_scrape_source(["linkedin"], False) is True
 
     def test_linkedin_and_yc_both_run(self):
-        assert brain1.jobspy_enabled(["linkedin"]) is True
+        assert brain1.linkedin_enabled(["linkedin"]) is True
         assert brain1.has_scrape_source(["linkedin"], True) is True
 
 

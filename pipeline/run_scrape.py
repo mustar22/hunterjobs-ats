@@ -55,20 +55,19 @@ def run_scrape(only: set[str] | None = None) -> dict:
     want = (lambda name: (only is None or name in only))
     init_db()
     conn = get_db_connection()
-    counts = {"linkedin_indeed": 0, "hn": 0, "yc": 0}
+    counts = {"linkedin": 0, "hn": 0, "yc": 0}
     try:
         sources = [s for s in (cfg.get("sources") or [])
-                   if s in ("linkedin", "indeed") and want(s)]
+                   if s == "linkedin" and want(s)]
         terms = [t.strip() for t in (cfg.get("search_terms") or "").split(",")
                  if t.strip()]
         if sources and terms:
             for term in terms:
-                df = b1.safe_scrape(term, sources,
-                                    int(cfg.get("results_wanted", 50)),
-                                    int(cfg.get("hours_old", 720)))
-                if df is not None and len(df):
-                    counts["linkedin_indeed"] += _store(
-                        conn, [r for _, r in df.iterrows()], f"jobspy:{term}")
+                rows = b1.safe_scrape(term, sources,
+                                      int(cfg.get("results_wanted", 50)),
+                                      int(cfg.get("hours_old", 720)))
+                if rows:
+                    counts["linkedin"] += _store(conn, rows, f"linkedin:{term}")
         if cfg.get("use_hn") and want("hn"):
             rows = b1.apply_yc_date_filter(hn.scrape_hn_jobs(cfg),
                                            int(cfg.get("hours_old", 720)))

@@ -40,6 +40,7 @@ DEPTH_LIMIT = 1000         # LinkedIn's own: start >= 1000 returns HTTP 400
 EMPTY_RETRIES = 2          # an empty page mid-run is a hiccup, not the end
 EMPTY_STOP = 3             # this many empty pages in a row and we believe it
 DELAY = (3.0, 7.0)         # same politeness window jobspy uses, and it works
+BACKOFF = (30, 60, 120, 240)   # 429 waits; exhaust these and the run is partial
 
 # The guest endpoint accepts every f_* filter and ignores all of them: f_WT
 # (work mode), f_F (function), f_I (industry), f_E (experience), f_JT (type)
@@ -59,8 +60,8 @@ def _session() -> requests.Session:
 
 def _get_page(session, start: int, hours: int, location: str,
               keywords: str = "", timeout: int = 15):
-    """One search page. Returns (ok, cards) — ok=False means ask again later,
-    never 'there is nothing here'."""
+    """One search page. Returns (status, cards) where status is "ok",
+    "ratelimited" or "error" — never 'there is nothing here'."""
     params = {
         "location": location,
         "f_TPR": f"r{int(hours * 3600)}",
@@ -73,16 +74,15 @@ def _get_page(session, start: int, hours: int, location: str,
         r = session.get(SEARCH_URL, params=params, timeout=timeout)
     except Exception as e:
         log.warning(f"[li] page start={start} failed: {e}")
-        return False, []
+        return "error", []
     if r.status_code == 429:
-        log.error("[li] 429 — LinkedIn is rate-limiting; back off and rerun")
-        return False, []
+        return "ratelimited", []
     if r.status_code >= 400:
-        return False, []
+        return "error", []
     if BeautifulSoup is None:
         raise RuntimeError("beautifulsoup4 is required for the LinkedIn source")
     soup = BeautifulSoup(r.text, "html.parser")
-    return True, soup.find_all("div", class_="base-search-card")
+    return "ok", soup.find_all("div", class_="base-search-card")
 
 
 def _card_date(card) -> str:
@@ -167,14 +167,26 @@ def scrape_linkedin_jobs(hours: int = 72, location: str = "Worldwide",
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).date().isoformat()
     session = _session()
     rows: dict[str, dict] = {}
-    start = pages = empty_streak = failed = 0
+    start = pages = empty_streak = failed = throttled = 0
     reason = "end of results"
     oldest = ""
 
     while start < depth_limit:
-        ok, cards = _get_page(session, start, hours, location, keywords)
+        status, cards = _get_page(session, start, hours, location, keywords)
         pages += 1
-        if not ok:
+        if status == "ratelimited":
+            # wait it out and retry the SAME offset — skipping ahead here is how
+            # you silently lose a page
+            if throttled >= len(BACKOFF):
+                reason = "rate limited — LinkedIn stopped answering"
+                break
+            wait = BACKOFF[throttled] + random.uniform(0, 10)
+            throttled += 1
+            log.warning(f"[li] 429 at start={start} — backing off {wait:.0f}s "
+                        f"({throttled}/{len(BACKOFF)})")
+            time.sleep(wait)
+            continue
+        if status == "error":
             failed += 1
             if empty_streak >= EMPTY_RETRIES:
                 reason = "request failures"
@@ -192,6 +204,7 @@ def scrape_linkedin_jobs(hours: int = 72, location: str = "Worldwide",
             start += PAGE
             continue
         empty_streak = 0
+        throttled = 0        # a good page means the throttle lifted
 
         stop = False
         for card in cards:
@@ -229,5 +242,6 @@ def scrape_linkedin_jobs(hours: int = 72, location: str = "Worldwide",
     if stats is not None:
         stats.update(pages=pages, listings=len(out), oldest=oldest,
                      cutoff=cutoff, reason=reason, failed=failed,
+                     throttled=throttled,
                      complete=reason == "reached the window edge")
     return out
