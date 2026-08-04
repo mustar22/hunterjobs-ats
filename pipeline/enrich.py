@@ -347,8 +347,9 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
                         "url": f"https://www.ycombinator.com/companies/{yc_slug}"})
 
     # research inputs + the one LLM call
+    research_ok = True
     if cached and not force:
-        # fresh research already cached; we only owed the hunt
+        # fresh research already cached; only the hunt was owed
         result = dict(cached)
         sources = (cached.get("sources") or []) or sources
     else:
@@ -359,10 +360,18 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
         prompt = _build_prompt(company, domain, yc, site_text, site_tag,
                                li_facts)
         llm_people: list[dict] = []
+        research_ok = True
         try:
-            r = b1.call_gemma(client, model, backend, _SYSTEM, prompt,
-                              CompanyEnrichment, stage="stage2",
-                              max_output_tokens=1536)
+            try:
+                r = b1.call_gemma(client, model, backend, _SYSTEM, prompt,
+                                  CompanyEnrichment, stage="stage2",
+                                  max_output_tokens=1536)
+            except Exception as first:
+                # an empty completion is usually a blip, not a verdict
+                log.info(f"[enrich] {company}: retrying after {first}")
+                r = b1.call_gemma(client, model, backend, _SYSTEM, prompt,
+                                  CompanyEnrichment, stage="stage2",
+                                  max_output_tokens=1536)
             if meter is not None:
                 meter.count("stage2_runs")
             summary = r.company_summary
@@ -394,10 +403,15 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
                 "company_size": (_li_size(li_facts) or r.company_size),
             }
         except Exception as e:
+            research_ok = False
             log.warning(f"[enrich] LLM enrichment failed for '{company}': {e}")
+            # "tiny" was a fabrication; LinkedIn's stated size is real, and
+            # blank is honest when there isn't one
             result = {"company_summary": "Info unavailable.",
                       "hiring_signal": "uncertain", "real_stack": [],
-                      "culture_flags": [], "company_size": "tiny"}
+                      "culture_flags": (["staffing_agency"]
+                                        if _li_is_agency(li_facts) else []),
+                      "company_size": _li_size(li_facts) or ""}
         result["_people"] = llm_people
 
     yc_founders = [dict(f) for f in (yc or {}).get("founders") or []]
@@ -436,7 +450,13 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
         **{k: result[k] for k in ("company_summary", "hiring_signal",
                                   "real_stack", "culture_flags", "company_size")},
     }
-    companies.save(conn, key, out)
+    # caching a failed research freezes "Info unavailable." for the whole TTL,
+    # so a blip becomes a permanent answer. Keep it only when something useful
+    # came out of the pass.
+    if research_ok or merged:
+        companies.save(conn, key, out)
+    else:
+        log.info(f"[enrich] {company}: nothing learned — not cached, will retry")
     if meter is not None and hunted:
         meter.count("stage3_runs")
     return out

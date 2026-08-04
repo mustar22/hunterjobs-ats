@@ -799,3 +799,59 @@ class TestEmptyResearchDetection:
         from pipeline.brain1 import _research_is_empty as f
         assert not f("Acme builds warehouse robotics for European retailers "
                      "and was founded in 2019. Funding is unknown.")
+
+
+class TestPhraseDegeneration:
+    """Real Gemma output from my own runs. The old guard only caught loops
+    inside one word ('unidentifiableifiable'); these loop across word
+    boundaries, so str.split() sees three different tokens."""
+
+    def _f(self):
+        from pipeline.brain1 import _is_degenerate
+        return _is_degenerate
+
+    def test_adobe_multi_platform_stutter(self):
+        assert self._f()(
+            "Adobe is a global leader in a multi--platform-based "
+            "multi-platform--based multi-platform-based multi")
+
+    def test_on_demand_loop(self):
+        assert self._f()(
+            "iFindTech Ltd is a boutique technology recruitment business. The "
+            "company focuses on on-demand-demand-on-demand-demand-on-and-on-"
+            "demand-ontext-on-demand-on-")
+
+    def test_test_automation_groove(self):
+        assert self._f()(
+            "a1qa is a global software testing company providing manual, "
+            "manual-to-automation, m-test,-test-automation, "
+            "oote-test-automation, hought:thought")
+
+    def test_fabricating_table_loop(self):
+        assert self._f()(
+            "Helloo is a Brazilian media company. There is a mismatch Mismatch- "
+            "helloo. Fabricating-Fabric<table>-Table (Table-Helloo. "
+            "Fabricating-Fabric<table>-Table")
+
+    def test_real_summaries_are_left_alone(self):
+        f = self._f()
+        for good in [
+            "Monterail is a Polish software house building web and mobile "
+            "products for startups and enterprises.",
+            "Adobe is a global leader in creative software, known for Photoshop "
+            "and the Creative Cloud suite, founded in 1982.",
+            "Zensar Technologies is an Indian publicly traded software and "
+            "services company, specializing in AI-led digital transformation "
+            "and digital engineering.",
+            "We are a fast-paced, fast-growing startup. Our team is small but "
+            "very very motivated.",
+        ]:
+            assert not f(good), good[:50]
+
+    def test_a_repeated_company_name_is_not_a_loop(self):
+        # local window on purpose: a name recurring across a paragraph is
+        # normal writing, not a model stuck in a groove
+        assert not self._f()(
+            "Ventrata builds ticketing software for attractions. Ventrata was "
+            "founded in 2017 and works with museums across Europe, where "
+            "Ventrata handles millions of bookings each year.")

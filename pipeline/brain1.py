@@ -352,6 +352,31 @@ def scrape_team_contacts(domain: str, company: str = "", timeout: int = 5,
 _DEGEN_REPEAT_RE = re.compile(r"(.{3,}?)\1+", re.DOTALL)
 
 
+_DEGEN_NORM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _stutters(text: str, min_unit: int = 9, times: int = 3,
+              window: int = 140) -> bool:
+    """A long chunk repeating several times close together is a loop.
+
+    Local on purpose: a company name repeating across a paragraph is normal
+    writing; the same 9+ characters three times inside 140 is a model stuck in
+    a groove ("...m-test,-test-automation, oote-test-automation...")."""
+    flat = _DEGEN_NORM_RE.sub("", (text or "").lower())
+    for i in range(0, max(0, len(flat) - min_unit)):
+        unit = flat[i:i + min_unit]
+        nxt, count = i + min_unit, 1
+        while count < times:
+            j = flat.find(unit, nxt, i + window)
+            if j < 0:
+                break
+            count += 1
+            nxt = j + min_unit
+        if count >= times:
+            return True
+    return False
+
+
 def _is_degenerate(text: str, *, min_tokens: int = 6,
                    distinct_ratio: float = 0.5,
                    repeat_coverage: float = 0.5) -> bool:
@@ -380,6 +405,20 @@ def _is_degenerate(text: str, *, min_tokens: int = 6,
         if (len(unit) >= 4 and not any(c.isspace() for c in unit)
                 and len(m.group(0)) / len(s) >= repeat_coverage):
             return True
+    # Same word modulo punctuation: "multi--platform-based multi-platform--based
+    # multi-platform-based" is three of one word to a reader, three different
+    # tokens to str.split().
+    norm = [_DEGEN_NORM_RE.sub("", t.lower()) for t in toks]
+    run = 1
+    for a, b in zip(norm, norm[1:]):
+        if not a:
+            run = 1
+            continue
+        run = run + 1 if a == b else 1
+        if run >= 3:
+            return True
+    if _stutters(s):
+        return True
     # One stuttered word inside otherwise-fine prose ("...are
     # unidentifiableifiable from the"): whole-text ratios get diluted by the
     # normal words around it, so score long tokens on their own.
