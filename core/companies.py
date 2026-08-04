@@ -42,6 +42,10 @@ def get_cached(conn: sqlite3.Connection, key: str,
     ).fetchone()
     if not row:
         return None
+    # a row with no research isn't a cache hit — with ttl_days=0 (never expires)
+    # a blanked or failed row would otherwise be served forever
+    if not (row["company_summary"] or "").strip():
+        return None
     if ttl_days > 0:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat()
         if (row["researched_at"] or "") < cutoff:

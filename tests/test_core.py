@@ -855,3 +855,31 @@ class TestPhraseDegeneration:
             "Ventrata builds ticketing software for attractions. Ventrata was "
             "founded in 2017 and works with museums across Europe, where "
             "Ventrata handles millions of bookings each year.")
+
+
+class TestBlankResearchIsNotACacheHit:
+    """company_ttl_days=0 means "never expires", so a row whose research failed
+    or was cleared would be served as a valid cache hit forever."""
+
+    def _conn(self, tmp_path, monkeypatch):
+        import core.database as cdb
+        monkeypatch.setattr(cdb, "DB_PATH", tmp_path / "c.db")
+        cdb.init_db()
+        return cdb.get_db_connection()
+
+    def test_blank_summary_is_not_cached(self, tmp_path, monkeypatch):
+        import core.companies as comp
+        conn = self._conn(tmp_path, monkeypatch)
+        comp.save(conn, "acme.com", {"name": "Acme", "company_summary": "",
+                                     "researched_at": "2026-08-01T00:00:00+00:00"})
+        assert comp.get_cached(conn, "acme.com", 0) is None
+
+    def test_real_research_still_caches(self, tmp_path, monkeypatch):
+        import core.companies as comp
+        conn = self._conn(tmp_path, monkeypatch)
+        comp.save(conn, "acme.com",
+                  {"name": "Acme",
+                   "company_summary": "Acme builds warehouse robotics for "
+                                      "European retailers, founded 2019.",
+                   "researched_at": "2026-08-01T00:00:00+00:00"})
+        assert comp.get_cached(conn, "acme.com", 0) is not None
