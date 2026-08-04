@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     applied          INTEGER DEFAULT 0,
     applied_date     TEXT,
 
+    -- source company page (LinkedIn slug URL); the real domain isn't in a listing
+    company_url      TEXT DEFAULT '',
+
     -- user annotations
     notes            TEXT DEFAULT '',
     row_color        TEXT DEFAULT ''
@@ -181,7 +184,7 @@ CREATE TABLE IF NOT EXISTS companies (
 # Company research imported from hunterjobsats.com — kept in its own table so
 # it never overwrites what you researched yourself. Same shape as `companies`
 # minus contacts/hunted (those are yours to find, on your own keys), which also
-# means a job can show both reads side by side and you can see where we differ.
+# means a job can show both reads side by side, disagreements included.
 COMPANIES_SEED_TABLE = """
 CREATE TABLE IF NOT EXISTS companies_seed (
     company_key     TEXT PRIMARY KEY,
@@ -291,6 +294,8 @@ def init_db() -> None:
         # v0.7: judged from the listing by the LLM, not keyword-matched
         ("work_mode", "TEXT DEFAULT 'unknown'"),
         ("us_auth_required", "TEXT DEFAULT 'unclear'"),
+        # the company page URL; a listing never carries a real domain
+        ("company_url", "TEXT DEFAULT ''"),
     ]:
         if col not in existing_cols:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_def}")

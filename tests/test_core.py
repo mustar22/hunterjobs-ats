@@ -773,3 +773,29 @@ class TestListingPulse:
         conn = self._conn(tmp_path, monkeypatch)
         ledger.upsert_seen(conn, "yc-1", "yc")
         assert lp.run_pulse(conn, sources=("yc",), limit=10) == {}
+
+
+class TestEmptyResearchDetection:
+    """'researched=12' shouldn't imply 12 useful answers when several are
+    'No information available for X' — those cost a call and taught nothing."""
+
+    def test_a_refusal_counts_as_empty(self):
+        from pipeline.brain1 import _research_is_empty as f
+        assert f("No company content is available to analyze.")
+        assert f("No information available for Shields Group Search.")
+        assert f("Domain and domain-related content is unavailable.")
+
+    def test_real_research_is_not_empty(self):
+        from pipeline.brain1 import _research_is_empty as f
+        assert not f("Monterail is a Polish software house building web and "
+                     "mobile products for startups and enterprises.")
+
+    def test_a_stub_is_empty(self):
+        from pipeline.brain1 import _research_is_empty as f
+        assert f("") and f("Size: tiny")
+
+    def test_the_word_unknown_late_in_a_good_summary_is_fine(self):
+        # only the opening is checked; a real summary may admit gaps at the end
+        from pipeline.brain1 import _research_is_empty as f
+        assert not f("Acme builds warehouse robotics for European retailers "
+                     "and was founded in 2019. Funding is unknown.")

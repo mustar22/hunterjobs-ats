@@ -234,7 +234,7 @@ def scrape_hn_jobs(cfg: dict, stats: dict | None = None) -> list[dict]:
     try:
         with requests.Session() as session:
             items = _fetch_many(kids, session)
-            # HN comments don't disappear, so a None is our failure — retry once
+            # HN comments don't disappear, so a None is a fetch failure — retry once
             missing = [k for k, it in zip(kids, items) if it is None]
             if missing:
                 log.info(f"[hn] {len(missing)} fetches failed, retrying once")

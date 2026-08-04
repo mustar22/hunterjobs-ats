@@ -19,6 +19,7 @@ import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 
@@ -38,7 +39,7 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
 PAGE = 10                  # what the endpoint actually returns, not the 25 you'd assume
 DEPTH_LIMIT = 1000         # LinkedIn's own: start >= 1000 returns HTTP 400
 EMPTY_RETRIES = 2          # an empty page mid-run is a hiccup, not the end
-EMPTY_STOP = 3             # this many empty pages in a row and we believe it
+EMPTY_STOP = 3             # this many empty pages in a row is a real ending
 DELAY = (3.0, 7.0)         # same politeness window jobspy uses, and it works
 BACKOFF = (30, 60, 120, 240)   # 429 waits; exhaust these and the run is partial
 
@@ -123,7 +124,8 @@ def parse_card(card) -> dict | None:
         "id": f"li-{job_id}",            # matches what's already in the pool
         "title": title,
         "company": company,
-        "company_url_direct": company_url.replace("https://www.linkedin.com/company/", ""),
+        "company_url_direct": "",          # a listing never carries a real domain
+        "company_url": company_url,        # the LinkedIn page; resolved at enrichment
         "location": location,
         "job_type": "",
         "min_amount": None,
@@ -187,8 +189,9 @@ def scrape_linkedin_jobs(hours: int = 72, location: str = "Worldwide",
             time.sleep(wait)
             continue
         if status == "error":
-            failed += 1
+            # retry the same offset; only count it lost if I give up on it
             if empty_streak >= EMPTY_RETRIES:
+                failed += 1
                 reason = "request failures"
                 break
             empty_streak += 1
@@ -238,10 +241,97 @@ def scrape_linkedin_jobs(hours: int = 72, location: str = "Worldwide",
              f"(window {hours}h, cutoff {cutoff}, "
              f"keywords={keywords or 'none'}) — stopped: {reason}")
     if failed:
-        log.warning(f"[li] {failed} page requests failed — coverage is incomplete")
+        log.warning(f"[li] gave up on {failed} page(s) — coverage is incomplete")
     if stats is not None:
         stats.update(pages=pages, listings=len(out), oldest=oldest,
                      cutoff=cutoff, reason=reason, failed=failed,
                      throttled=throttled,
-                     complete=reason == "reached the window edge")
+                     complete=reason.startswith(("reached the window edge",
+                                                 "hit limit")))
     return out
+
+
+# ── company pages ─────────────────────────────────────────────────────────────
+# A listing gives a company NAME and a LinkedIn slug, never a domain — so
+# enrichment had nothing to read and kept returning "No information available".
+# The company page carries the real website, plus fields LinkedIn already
+# classified: industry, size, type. Facts, not inferences.
+COMPANY_URL = "https://www.linkedin.com/company/{}"
+_LI_PERSON_RE = re.compile(r"linkedin\.com/in/")
+_ABOUT_FIELDS = ("Industry", "Company size", "Type", "Headquarters", "Founded",
+                 "Specialties")
+
+
+def company_slug(url_or_slug: str) -> str:
+    """'https://www.linkedin.com/company/joinhyra?x=1' -> 'joinhyra'."""
+    s = (url_or_slug or "").strip().rstrip("/")
+    if not s:
+        return ""
+    if "linkedin.com/company/" in s:
+        s = s.split("linkedin.com/company/", 1)[1]
+    return s.split("?")[0].split("/")[0]
+
+
+def fetch_company(slug: str, timeout: int = 15) -> dict | None:
+    """Company facts from the public page. None when LinkedIn refuses.
+
+    A FRESH session every call, deliberately: on a shared session the first
+    page returns 200 and every one after it returns HTTP 999. Cookies are the
+    trigger, not the IP — a clean jar works from the same address."""
+    slug = company_slug(slug)
+    if not slug:
+        return None
+    session = requests.Session()
+    session.headers.update({"user-agent": UA, "accept": "text/html",
+                            "accept-language": "en-US,en;q=0.9"})
+    try:
+        r = session.get(COMPANY_URL.format(slug), timeout=timeout)
+    except Exception as e:
+        log.debug(f"[li] company {slug} fetch failed: {e}")
+        return None
+    finally:
+        session.close()
+    if r.status_code == 999:
+        log.warning(f"[li] company {slug}: HTTP 999 — reusing a session?")
+        return None
+    if r.status_code != 200 or BeautifulSoup is None:
+        return None
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    out: dict = {"slug": slug}
+
+    a = soup.find("a", {"data-tracking-control-name": "about_website"})
+    if a:
+        q = parse_qs(urlparse(a.get("href") or "").query).get("url")
+        out["website"] = unquote(q[0]) if q else a.get_text(strip=True)
+
+    for dt in soup.find_all("dt"):
+        key = dt.get_text(strip=True)
+        dd = dt.find_next_sibling("dd")
+        if dd and key in _ABOUT_FIELDS:
+            out[key.lower().replace(" ", "_")] = dd.get_text(" ", strip=True)[:200]
+
+    for sel in (("p", "about-us__description"), ("p", "break-words"),
+                ("section", "about-us")):
+        el = soup.find(sel[0], class_=sel[1])
+        if el and len(el.get_text(strip=True)) > 60:
+            out["about"] = el.get_text(" ", strip=True)[:2000]
+            break
+
+    seen, people = set(), []
+    for link in soup.find_all("a", href=_LI_PERSON_RE):
+        name = link.get_text(strip=True)
+        if name and len(name) < 60 and name.lower() not in seen:
+            seen.add(name.lower())
+            people.append(name)
+    out["employees"] = people[:8]
+    return out
+
+
+# LinkedIn's own taxonomy value — an agency that labels itself honestly needs
+# no model to spot it
+AGENCY_INDUSTRY = "staffing and recruiting"
+
+
+def is_agency_industry(company: dict | None) -> bool:
+    return bool(company) and AGENCY_INDUSTRY in (company.get("industry") or "").lower()

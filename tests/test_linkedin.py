@@ -104,3 +104,45 @@ class TestParsing:
                     return {"href": "https://www.linkedin.com/jobs/view/nope"}
                 return None
         assert li.parse_card(Bad(1)) is None
+
+
+class TestCompanyPage:
+    """A listing carries a company name and a slug, never a domain — which is
+    why research kept returning 'No information available'. The company page
+    has the real website plus fields LinkedIn already classified."""
+
+    def test_slug_survives_every_url_shape(self):
+        for raw, want in [
+            ("https://www.linkedin.com/company/joinhyra", "joinhyra"),
+            ("https://se.linkedin.com/company/spotify?trk=x", "spotify"),
+            ("https://www.linkedin.com/company/luxoft-serbia/", "luxoft-serbia"),
+            ("joinhyra", "joinhyra"),
+            ("", ""),
+        ]:
+            assert li.company_slug(raw) == want
+
+    def test_linkedins_own_industry_flags_an_agency(self):
+        # no model involved: the company filed itself under this
+        assert li.is_agency_industry({"industry": "Staffing and Recruiting"})
+        assert li.is_agency_industry({"industry": "staffing and recruiting"})
+
+    def test_a_normal_industry_is_not_an_agency(self):
+        assert not li.is_agency_industry({"industry": "Software Development"})
+        assert not li.is_agency_industry({"industry": "IT Services and IT Consulting"})
+        assert not li.is_agency_industry({})
+        assert not li.is_agency_industry(None)
+
+    def test_http_999_returns_none_rather_than_junk(self, monkeypatch):
+        # 999 is what LinkedIn sends when a session has already spent its one
+        # free company page — it must not look like an empty company
+        class R:
+            status_code, text, url = 999, "", ""
+        monkeypatch.setattr(li.requests, "Session",
+                            lambda: type("S", (), {
+                                "headers": {}, "get": lambda s, *a, **k: R(),
+                                "close": lambda s: None,
+                                "__init__": lambda s: None})())
+        assert li.fetch_company("anything") is None
+
+    def test_blank_slug_is_not_fetched(self):
+        assert li.fetch_company("") is None

@@ -192,9 +192,27 @@ def crawl_team_contacts(domain: str, company: str, limit: int = 8) -> list[dict]
     return out
 
 
+def _li_is_agency(li_facts: dict) -> bool:
+    """LinkedIn's own Industry value, no inference involved."""
+    try:
+        from pipeline.sources import linkedin as _li
+        return _li.is_agency_industry(li_facts)
+    except Exception:
+        return False
+
+
 def _build_prompt(company: str, domain: str, yc: dict | None,
-                  site_text: str, site_tag: str) -> str:
+                  site_text: str, site_tag: str, li: dict | None = None) -> str:
     parts = [f"Company: {company}", f"Domain: {domain or 'unknown'}"]
+    if li:
+        bits = [f"{k.replace('_', ' ').title()}: {li[k]}"
+                for k in ("industry", "company_size", "type", "headquarters",
+                          "founded", "specialties") if li.get(k)]
+        if li.get("about"):
+            bits.append(f"How they describe themselves: {li['about']}")
+        if bits:
+            parts.append("=== LINKEDIN COMPANY PAGE (stated by the company) ===\n"
+                         + "\n".join(bits))
     if yc:
         yc_bits = []
         if yc.get("one_liner"):
@@ -263,9 +281,22 @@ def _seed_research(conn, key: str) -> dict | None:
 def enrich_company(conn, cfg: dict, company: str, domain: str,
                    client=None, model=None, backend=None,
                    yc_slug: str = "", skip_hunt: bool = False,
-                   force: bool = False, meter=None) -> dict:
+                   force: bool = False, meter=None,
+                   company_url: str = "") -> dict:
     """Research + contacts for one company, cache-first. Returns the cache-row
     dict shape (research fields + contacts list + hunted flag + from_cache)."""
+    # A LinkedIn listing carries a company NAME and a slug, never a domain, so
+    # research had nothing to read. The company page has the real website plus
+    # fields LinkedIn already classified - facts, so they outrank the model.
+    li_facts: dict = {}
+    if company_url and not b1.clean_domain(domain):
+        from pipeline.sources import linkedin as _li
+        li_facts = _li.fetch_company(company_url) or {}
+        site = li_facts.get("website") or ""
+        if b1.clean_domain(site):
+            domain = site
+            log.info(f"[enrich] {company}: resolved {b1.clean_domain(site)} "
+                     f"from its LinkedIn page")
     key = companies.company_key(company, b1.clean_domain(domain))
     ttl = int(cfg.get("company_ttl_days", 30))
     cached = None if force else companies.get_cached(conn, key, ttl)
@@ -300,6 +331,9 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
 
     # trust receipts: every URL the research actually read
     sources: list[dict] = []
+    if li_facts.get("slug"):
+        sources.append({"label": "LinkedIn company page",
+                        "url": f"https://www.linkedin.com/company/{li_facts['slug']}"})
     if yc:
         sources.append({"label": "YC profile",
                         "url": f"https://www.ycombinator.com/companies/{yc_slug}"})
@@ -314,7 +348,8 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
                                                              client, model, backend)
         label = "Company site" if site_tag == "website" else "Web search"
         sources += [{"label": label, "url": u} for u in site_urls]
-        prompt = _build_prompt(company, domain, yc, site_text, site_tag)
+        prompt = _build_prompt(company, domain, yc, site_text, site_tag,
+                               li_facts)
         llm_people: list[dict] = []
         try:
             r = b1.call_gemma(client, model, backend, _SYSTEM, prompt,
@@ -340,8 +375,14 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
                 "company_summary": summary,
                 "hiring_signal": r.hiring_signal,
                 "real_stack": r.real_stack,
-                "culture_flags": r.culture_flags,
-                "company_size": r.company_size,
+                # a company that files itself under "Staffing and Recruiting"
+                # needs no model to identify
+                "culture_flags": (list(r.culture_flags) + ["staffing_agency"]   # same token the prompt asks the model for
+                                  if _li_is_agency(li_facts)
+                                  else r.culture_flags),
+                # LinkedIn states its size; the model guesses it. State wins.
+                "company_size": (li_facts.get("company_size")
+                                 or r.company_size),
             }
         except Exception as e:
             log.warning(f"[enrich] LLM enrichment failed for '{company}': {e}")

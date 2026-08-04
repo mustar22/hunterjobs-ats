@@ -1005,6 +1005,21 @@ def _known_agency(conn, company: str, domain: str, dismissed: set[str]) -> str:
     return ""
 
 
+_EMPTY_RESEARCH_RE = re.compile(
+    r"no (company )?(content|information|data)|unknown|unavailable|not available",
+    re.I)
+
+
+def _research_is_empty(summary: str) -> bool:
+    """A summary that says it found nothing cost a call and taught nothing.
+    Counting these separately keeps 'researched=12' from implying 12 useful
+    answers when several are 'No information available for X'."""
+    text = (summary or "").strip()
+    # only the opening: a real summary may legitimately admit a gap later
+    # ("...founded in 2019. Funding is unknown.")
+    return len(text) < 40 or bool(_EMPTY_RESEARCH_RE.search(text[:60]))
+
+
 def _is_staffing_agency(culture_flags, summary: str) -> bool:
     """True only on agency-specific signals (places people at other companies),
     not on bare product-labeling terms."""
@@ -1024,7 +1039,7 @@ JOB_INSERT_COLS = (
     "id", "title", "company", "domain", "location", "job_type",
     "salary_min", "salary_max", "currency", "source", "url",
     "description", "date_posted", "date_scraped", "description_hash",
-    "date_posted_estimated", "yc_slug",
+    "date_posted_estimated", "yc_slug", "company_url",
 )
 
 
@@ -1040,6 +1055,9 @@ def scraped_row_to_job(row, job_id: str = "", desc: str = "",
         "title": str(row.get("title") or ""),
         "company": str(row.get("company") or ""),
         "domain": _company_domain(row),
+        # keeps the LinkedIn slug alive: a listing has no real domain, the
+        # company page does
+        "company_url": str(row.get("company_url") or ""),
         "location": str(row.get("location") or ""),
         "job_type": str(row.get("job_type") or ""),
         "salary_min": row.get("min_amount"),
@@ -1066,13 +1084,14 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
     params = {c: job.get(c) for c in JOB_INSERT_COLS}
     params["date_posted_estimated"] = int(params.get("date_posted_estimated") or 0)
     params["yc_slug"] = params.get("yc_slug") or ""
+    params["company_url"] = params.get("company_url") or ""
     conn.execute(
         """
         INSERT OR REPLACE INTO jobs (
             id, title, company, domain, location, job_type,
             salary_min, salary_max, currency, source, url,
             description, date_posted, date_scraped, description_hash,
-            date_posted_estimated, yc_slug,
+            date_posted_estimated, yc_slug, company_url,
             verdict, reject_reason, gemma1_done,
             work_mode, us_auth_required,
             company_summary, hiring_signal, real_stack, culture_flags, company_size,
@@ -1082,7 +1101,7 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
             :id, :title, :company, :domain, :location, :job_type,
             :salary_min, :salary_max, :currency, :source, :url,
             :description, :date_posted, :date_scraped, :description_hash,
-            :date_posted_estimated, :yc_slug,
+            :date_posted_estimated, :yc_slug, :company_url,
             :verdict, :reject_reason, :gemma1_done,
             :work_mode, :us_auth_required,
             NULL, 'uncertain', '[]', '[]', 'tiny',
@@ -1195,7 +1214,7 @@ def safe_scrape(term: str, sources: list[str], results_wanted: int,
                                    limit=results_wanted or None,
                                    stats=stats)
     if not stats.get("complete"):
-        log.warning(f"[stage1] '{term}': coverage incomplete — {stats.get('reason')}")
+        log.warning(f"[stage1] '{term}': incomplete — {stats.get('reason')}")
     return rows
 
 
@@ -1432,7 +1451,10 @@ def run_brain1() -> None:
     threading.Thread(target=_watchdog, daemon=True, name="brain1-watchdog").start()
 
     counts = {"scraped": 0, "good": 0, "maybe": 0, "bad": 0, "hard_rej": 0,
-              "no_desc": 0, "judged": 0, "queued": 0}
+              "no_desc": 0, "judged": 0, "queued": 0,
+              # enrichment is the expensive half and had nothing to show for it
+              "researched": 0, "cached": 0, "contacts": 0,
+              "research_failed": 0, "agencies": 0}
 
     good_jobs: list[dict] = []
     # Cross-source dedup by job_url (LinkedIn/YC/HN can overlap within a run).
@@ -1725,6 +1747,7 @@ def run_brain1() -> None:
                         client=s2_client, model=s2_model, backend=s2_backend,
                         yc_slug=job.get("yc_slug") or "",
                         skip_hunt=bool(baked), meter=meter,
+                        company_url=job.get("company_url") or "",
                     )
                     research = CompanyResearch(
                         company_summary=e["company_summary"],
@@ -1738,9 +1761,14 @@ def run_brain1() -> None:
                     job["company_summary"] = research.company_summary
                     contacts = _merge_contacts([baked, e["contacts"]])
                     update_job_outreach(conn, job["id"], contacts)
+                    counts["cached" if e.get("from_cache") else "researched"] += 1
+                    counts["contacts"] += len(contacts)
+                    if _research_is_empty(research.company_summary):
+                        counts["research_failed"] += 1
 
                     # Demote only on agency signals, not bare product-labeling.
                     if _is_staffing_agency(research.culture_flags, research.company_summary):
+                        counts["agencies"] += 1
                         conn.execute(
                             "UPDATE jobs SET verdict=?, reject_reason=? WHERE id=?",
                             (
@@ -1763,6 +1791,7 @@ def run_brain1() -> None:
                             f"{' [posting email]' if baked else ''}"
                         )
                 except Exception as e:
+                    counts["research_failed"] += 1
                     log.error(
                         f"[enrich] [{i}/{len(good_jobs)}] failed for {job['company']}: {e}"
                     )
@@ -1802,7 +1831,11 @@ def run_brain1() -> None:
             f"hard_rejected={counts['hard_rej']} "
             f"judged={counts['judged']}{cap_note} queued={counts['queued']} | "
             f"good={counts['good']} maybe={counts['maybe']} "
-            f"bad={counts['bad']} no_desc={counts['no_desc']}"
+            f"bad={counts['bad']} no_desc={counts['no_desc']} | "
+            # researched/cached count COMPANIES on GOOD jobs, not listings
+            f"researched={counts['researched']} cached={counts['cached']} "
+            f"failed2research={counts['research_failed']} "
+            f"contacts={counts['contacts']} agencies={counts['agencies']}"
         )
         log.info("=" * 60)
 

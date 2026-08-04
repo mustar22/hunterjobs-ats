@@ -42,7 +42,7 @@ SOURCES = ("linkedin", "hn")   # yc liveness arrives free with its census scrape
 
 
 def _stalest(conn, source: str, limit: int) -> list[str]:
-    """Listings we've verified least recently, oldest first."""
+    """Listings verified least recently, oldest first."""
     return [r[0] for r in conn.execute(
         "SELECT job_key FROM seen_jobs WHERE source = ? AND expired_at IS NULL "
         "ORDER BY COALESCE(checked_at, '') ASC, last_seen_at ASC LIMIT ?",
@@ -76,7 +76,7 @@ def _record(conn, job_key: str, alive: bool | None) -> bool:
 
 
 def _check_linkedin(session, job_key: str) -> bool | None:
-    """404 = gone. Anything else that isn't 200 means we couldn't tell."""
+    """404 = gone. Anything else that isn't 200 means no verdict."""
     try:
         r = session.get(LI_VIEW.format(job_key[3:]), timeout=15,
                         allow_redirects=False)
