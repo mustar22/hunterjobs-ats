@@ -192,6 +192,14 @@ def crawl_team_contacts(domain: str, company: str, limit: int = 8) -> list[dict]
     return out
 
 
+def _li_size(li_facts: dict) -> str:
+    try:
+        from pipeline.sources import linkedin as _li
+        return _li.size_bucket(li_facts.get("company_size") or "")
+    except Exception:
+        return ""
+
+
 def _li_is_agency(li_facts: dict) -> bool:
     """LinkedIn's own Industry value, no inference involved."""
     try:
@@ -380,9 +388,10 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
                 "culture_flags": (list(r.culture_flags) + ["staffing_agency"]   # same token the prompt asks the model for
                                   if _li_is_agency(li_facts)
                                   else r.culture_flags),
-                # LinkedIn states its size; the model guesses it. State wins.
-                "company_size": (li_facts.get("company_size")
-                                 or r.company_size),
+                # LinkedIn states its size, the model guesses it: state wins.
+                # Bucketed, because the schema takes tiny/mid/enterprise and a
+                # raw '201-500 employees' fails validation and kills the row.
+                "company_size": (_li_size(li_facts) or r.company_size),
             }
         except Exception as e:
             log.warning(f"[enrich] LLM enrichment failed for '{company}': {e}")

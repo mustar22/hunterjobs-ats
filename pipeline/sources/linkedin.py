@@ -335,3 +335,18 @@ AGENCY_INDUSTRY = "staffing and recruiting"
 
 def is_agency_industry(company: dict | None) -> bool:
     return bool(company) and AGENCY_INDUSTRY in (company.get("industry") or "").lower()
+
+
+def size_bucket(raw: str) -> str:
+    """LinkedIn's '201-500 employees' -> the schema's tiny/mid/enterprise.
+
+    Passing the raw string through fails validation and kills the whole
+    enrichment for that company, so it has to be bucketed here."""
+    m = re.search(r"[\d,]+", raw or "")
+    if not m:
+        return ""
+    try:
+        low = int(m.group(0).replace(",", ""))
+    except ValueError:
+        return ""
+    return "tiny" if low < 50 else ("mid" if low < 500 else "enterprise")

@@ -146,3 +146,30 @@ class TestCompanyPage:
 
     def test_blank_slug_is_not_fetched(self):
         assert li.fetch_company("") is None
+
+
+class TestSizeBucket:
+    """The schema takes tiny/mid/enterprise. Passing LinkedIn's raw
+    '201-500 employees' through failed validation and killed enrichment for
+    every company whose page resolved — 37 of 37 in one run."""
+
+    def test_linkedin_ranges_map_to_the_schema(self):
+        for raw, want in [
+            ("2-10 employees", "tiny"), ("11-50 employees", "tiny"),
+            ("51-200 employees", "mid"), ("201-500 employees", "mid"),
+            ("501-1,000 employees", "enterprise"),
+            ("10,001+ employees", "enterprise"),
+        ]:
+            assert li.size_bucket(raw) == want, raw
+
+    def test_every_bucket_is_schema_valid(self):
+        from core.schemas import CompanyResearch
+        for raw in ("2-10 employees", "201-500 employees", "10,001+ employees"):
+            CompanyResearch(company_summary="x", hiring_signal="uncertain",
+                            real_stack=[], culture_flags=[],
+                            company_size=li.size_bucket(raw))
+
+    def test_unparseable_returns_empty_so_the_model_keeps_its_answer(self):
+        assert li.size_bucket("") == ""
+        assert li.size_bucket("unknown") == ""
+        assert li.size_bucket(None) == ""
