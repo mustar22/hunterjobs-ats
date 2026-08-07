@@ -1278,30 +1278,91 @@ def render_setup_tab():
                            "a scan re-researches them. 0 = keep forever.")
 
         ui.html('<div class="section-title">Sources</div>')
+        ui.html('<div style="font-size:12px; color:var(--text-dim); '
+                'margin-bottom:10px;">One block per source. Each keeps its own '
+                'settings so nothing bleeds between them.</div>')
         sources_set = set(cfg["sources"])
-        with ui.row().style("gap: 14px; align-items: center;"):
-            linkedin_cb = ui.checkbox("LinkedIn", value=("linkedin" in sources_set))
-            # YC startups are company-based, scraped per company rather than per term.
-            yc_cb = ui.checkbox("Y Combinator startups", value=bool(cfg.get("use_yc")))
-            yc_remote_cb = ui.checkbox("YC remote only",
-                                       value=bool(cfg.get("yc_remote_only", True)))
-            yc_team_in = ui.number(label="YC max team size (0 = any)",
-                                   value=cfg.get("yc_max_team_size", 50),
-                                   step=10, min=0, max=1000)\
-                .props("outlined dense").style("width: 180px;")
-            yc_comp_in = ui.number(label="YC max companies (0 = all)",
-                                   value=cfg.get("yc_max_companies", 100),
-                                   step=50, min=0, max=2000)\
-                .props("outlined dense").style("width: 190px;")
-            yc_ho_in = ui.number(label="YC max hours old",
-                                 value=cfg.get("yc_hours_old", 720),
-                                 step=24, min=24, max=2160)\
-                .props("outlined dense").style("width: 160px;")
-            # Hacker News "Who is hiring?" — single monthly thread, free APIs.
-            hn_cb = ui.checkbox("Hacker News (Who is hiring?)",
+
+        def _src_card(badge_html: str):
+            """One source, its toggle and its own settings — nothing shared."""
+            box = ui.element("div").classes("card").style(
+                "display:flex; flex-direction:column; gap:10px; "
+                "margin-bottom:12px;")
+            with box:
+                ui.html(badge_html)
+            return box
+
+        def _pill(label, bg, fg):
+            return (f'<span style="display:inline-block; background:{bg}; '
+                    f'color:{fg}; font-weight:700; font-size:12px; padding:3px 10px; '
+                    f'border-radius:6px; letter-spacing:.02em;">{label}</span>')
+
+        # ── Y Combinator ─────────────────────────────────────────────────────
+        with _src_card(_pill("YC", "linear-gradient(90deg,#ff3d00,#ff8c00)", "#fff")):
+            yc_cb = ui.checkbox("Scrape Y Combinator startups",
+                                value=bool(cfg.get("use_yc")))
+            ui.html('<div style="font-size:11.5px; color:var(--text-faint);">'
+                    'Company-based, not per term: it walks every hiring YC '
+                    'company and reads its ATS board. No search terms.</div>')
+            with ui.row().style("gap:12px; flex-wrap:wrap; align-items:center;"):
+                yc_remote_cb = ui.checkbox("Remote only",
+                                           value=bool(cfg.get("yc_remote_only", True)))
+                yc_team_in = ui.number(label="Max team size (0 = any)",
+                                       value=cfg.get("yc_max_team_size", 50),
+                                       step=10, min=0, max=1000)\
+                    .props("outlined dense").style("width: 180px;")
+                yc_comp_in = ui.number(label="Max companies (0 = all)",
+                                       value=cfg.get("yc_max_companies", 100),
+                                       step=50, min=0, max=2000)\
+                    .props("outlined dense").style("width: 190px;")
+                yc_ho_in = ui.number(label="Max hours old",
+                                     value=cfg.get("yc_hours_old", 720),
+                                     step=24, min=24, max=2160)\
+                    .props("outlined dense").style("width: 160px;")
+
+        # ── Hacker News ──────────────────────────────────────────────────────
+        with _src_card(_pill("HN", "linear-gradient(90deg,#ff8c00,#ffd000)", "#1a1300")):
+            hn_cb = ui.checkbox("Scrape Hacker News \"Who is hiring?\"",
                                 value=bool(cfg.get("use_hn")))
-            hn_remote_cb = ui.checkbox("HN remote only",
+            ui.html('<div style="font-size:11.5px; color:var(--text-faint);">'
+                    'One monthly thread, read in full. No search terms.</div>')
+            hn_remote_cb = ui.checkbox("Remote only",
                                        value=bool(cfg.get("hn_remote_only", True)))
+
+        # ── LinkedIn ─────────────────────────────────────────────────────────
+        with _src_card(_pill("LinkedIn", "#0A66C2", "#fff")):
+            linkedin_cb = ui.checkbox("Scrape LinkedIn",
+                                      value=("linkedin" in sources_set))
+            ui.html('<div style="font-size:11.5px; color:var(--text-faint);">'
+                    'Per search term, one per line. Leave empty and it pulls '
+                    'everything posted in the window, which is mostly retail.</div>')
+            li_terms_in = ui.textarea(
+                label="LinkedIn search terms",
+                value=cfg.get("linkedin_search_terms", cfg.get("search_terms", "")))\
+                .props("outlined autogrow").classes("w-full")
+
+        # ── HeadHunter ───────────────────────────────────────────────────────
+        with _src_card(_pill("hh", "#d6001c", "#fff")):
+            hh_cb = ui.checkbox("Scrape HeadHunter (CIS)",
+                                value=bool(cfg.get("use_hh")))
+            ui.html('<div style="font-size:11.5px; color:var(--text-faint);">'
+                    'Covers Russia, Kazakhstan, Belarus, Uzbekistan and more. '
+                    'Region is required - pick the market you want. Listings '
+                    'are mostly in Russian.</div>')
+            with ui.row().style("gap:12px; flex-wrap:wrap; align-items:center;"):
+                hh_area_sel = ui.select(
+                    {"": "Pick a region…", "russia": "Russia",
+                     "moscow": "Moscow only", "kazakhstan": "Kazakhstan",
+                     "belarus": "Belarus", "uzbekistan": "Uzbekistan",
+                     "tashkent": "Tashkent only"},
+                    value=cfg.get("hh_area", ""), label="Region")\
+                    .props("outlined dense").style("width: 190px;")
+                hh_remote_cb = ui.checkbox("Remote only",
+                                           value=bool(cfg.get("hh_remote_only", False)))
+            hh_terms_in = ui.textarea(
+                label="hh search terms",
+                value=cfg.get("hh_search_terms", cfg.get("search_terms", "")))\
+                .props("outlined autogrow").classes("w-full")
 
         ui.html('<div class="section-title">Brain 1 — Stage 1 Backend (job filter, high volume)</div>')
         ui.html(
@@ -1501,6 +1562,11 @@ def render_setup_tab():
                 "yc_hours_old": int(yc_ho_in.value or 720),
                 "use_hn": bool(hn_cb.value),
                 "hn_remote_only": bool(hn_remote_cb.value),
+                "use_hh": bool(hh_cb.value),
+                "hh_area": hh_area_sel.value or "",
+                "hh_remote_only": bool(hh_remote_cb.value),
+                "linkedin_search_terms": li_terms_in.value,
+                "hh_search_terms": hh_terms_in.value,
                 "theme": theme_select.value,
                 "profile": profile_ta.value,
                 # default brief saved as "" so future default improvements propagate
@@ -1569,10 +1635,12 @@ def render_setup_tab():
                 src_yc = ui.checkbox("YC", value=True).props("dense")
                 src_hn = ui.checkbox("Hacker News", value=True).props("dense")
                 src_li = ui.checkbox("LinkedIn", value=True).props("dense")
+                src_hh = ui.checkbox("hh", value=True).props("dense")
 
             def _picked() -> str:
                 return ",".join(n for n, cb in (("yc", src_yc), ("hn", src_hn),
-                                                ("linkedin", src_li)) if cb.value)
+                                                ("linkedin", src_li),
+                                                ("hh", src_hh)) if cb.value)
 
             with ui.row().style("gap: 10px; flex-wrap: wrap; margin-top: 8px;"):
                 ui.button(

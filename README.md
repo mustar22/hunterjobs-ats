@@ -33,7 +33,7 @@
 
 A local Python app that reads job listings so you don't have to. It scrapes them, judges each one against your profile, and for the ones worth your time it researches the company and digs up real people to contact. Everything runs on your machine against your own LLM key, stored in a plain SQLite file. No accounts, no cloud, no SaaS.
 
-Sources: LinkedIn, Y Combinator startups (scraped straight off each company's ATS board), and the monthly Hacker News "Who is Hiring?" thread. (Indeed is wired up but currently disabled - jobspy's Indeed scraper stopped returning anything, so it's greyed out rather than pretending.) The UI is a desktop dashboard: Jobs / Applied / Companies / Market Analyzer / Logs / Setup. Pick your sources, pick a backend (Gemini, Claude, Gemma, OpenAI, OpenRouter, or a local LM Studio model), paste your profile, hit Run. Jobs stream in as they're judged.
+Sources: LinkedIn, Y Combinator startups (scraped straight off each company's ATS board), the monthly Hacker News "Who is Hiring?" thread, and HeadHunter for the CIS. Every scraper is mine - no third-party scraping library. The UI is a desktop dashboard: Jobs / Applied / Companies / Market Analyzer / Logs / Setup. Pick your sources, pick a backend (Gemini, Claude, Gemma, OpenAI, OpenRouter, or a local LM Studio model), paste your profile, hit Run. Jobs stream in as they're judged.
 
 > **Work in progress.** Most of it works. Some bits are clanky. Feedback welcome.
 
@@ -45,7 +45,7 @@ Sources: LinkedIn, Y Combinator startups (scraped straight off each company's AT
 
 ## Why this exists
 
-The job market is broken from a candidate's side. Recruiter spam, ghost listings, staffing agencies dressed up as employers, the same 12 roles re-uploaded across 6 boards. Spray 200 applications, hope for 3 interviews. Weeks of your life for almost no signal.
+The job market is broken (a##) from a candidate's side. Recruiter spam, ghost listings, staffing agencies dressed up as employers, the same 12 roles re-uploaded across 6 boards. Spray 200 applications, hope for 3 interviews. Weeks of your life for almost no signal.
 
 So this is the inverse of a normal ATS. Those serve employers, helping companies filter candidates. This one serves you: it filters everything *they* throw at the market down to a short list that actually matches what you can do, with enough context to write a real email to a real person.
 
@@ -94,11 +94,12 @@ Both Brains talk to a local SQLite database (WAL mode + FTS5 for full-text searc
 
 ### Job sources
 
-HunterJobs pulls from four sources, mix-and-match in the Setup tab - each tagged with a colored badge in the job list so you can see at a glance where a listing came from (LinkedIn blue, Indeed navy, YC red-orange, HN orange-yellow):
+HunterJobs pulls from four sources, mix-and-match in the Setup tab - each gets its own block with its own settings, and each listing is tagged with a colored badge so you can see where it came from (LinkedIn blue, YC red-orange, HN orange-yellow, hh red):
 
-- **LinkedIn** - via [python-jobspy](https://github.com/cullenwatson/JobSpy), term-based search against your search terms. **Indeed** goes through the same library but is disabled right now: it came back empty across 21 broad terms, so the toggle is greyed until that's fixed.
+- **LinkedIn** - my own scraper. Asks for everything posted in a time window, in date order, and pages through it properly. Search terms are optional: leave them empty and it takes the whole firehose, which is useful for research and useless for a job hunt. It replaced a library that skipped pages, stopped on the first empty one, and sorted by relevance while reporting date order - on the same term and window mine returned 976 listings to its 119.
 - **Y Combinator startups** *(v0.3)* - powered by my companion package [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper). It pulls currently-hiring YC companies from the public [yc-oss](https://github.com/yc-oss/api) dataset, filters them down to small early-stage startups (configurable team-size cap), and scrapes jobs straight from each company's ATS board (Greenhouse / Lever / Ashby), falling back to the Work-at-a-Startup postings on the company's public YC profile page when there's no discoverable ATS - **~100% of hiring companies covered**, no auth. These are the kinds of roles that rarely make it to LinkedIn.
 - **Hacker News "Who is Hiring?"** *(new in v0.4.3)* - finds the newest monthly thread via the free HN Algolia + Firebase APIs (no auth) and parses each top-level comment into a job. Regex pulls the easy fields; the raw comment becomes the description Stage 1 judges.
+- **HeadHunter (hh)** *(new in v0.9.0)* - the CIS market, which none of the other three reach. No API key; the search page carries its own state as JSON. Pick a region (there is no default) and optionally give it search terms of its own. It's the only source here that hands over **real salary ranges and exact posting timestamps**, and it names the work format outright instead of leaving me to guess from the title. Results don't come back in date order even when asked, so it filters by date client-side rather than stopping at the first old row.
 
 YC and HN jobs can be filtered to **remote-only** before they ever reach Stage 1, so non-remote listings don't burn LLM calls. Freshness is windowed too: HN shares the global "Max hours old", while YC gets its own wider window (`yc_hours_old`, default 720h / 30 days) - YC startups leave postings up for months, so the tight job-board window would discard most of them. You can run any combination of sources, including YC or HN on their own.
 
@@ -112,7 +113,7 @@ It's built to stay inside the single-file philosophy: embeddings live in the sam
 
 ## Stack
 
-Python 3.10+, NiceGUI dashboard (FastAPI + Vue under the hood), SQLite (WAL + FTS5 + sqlite-vec), Pydantic v2 for structured LLM outputs, python-jobspy for LinkedIn/Indeed scraping, and [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper) for the YC source.
+Python 3.10+, NiceGUI dashboard (FastAPI + Vue under the hood), SQLite (WAL + FTS5 + sqlite-vec), Pydantic v2 for structured LLM outputs, and [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper) for the YC source. LinkedIn, HN and hh scraping are in-tree, no scraping library.
 
 **LLM backends supported:**
 - **Google Gemini / Gemma** via the google-genai SDK - Gemma 4 is free on Tier 1; Gemini also powers embeddings for the RAG feature
@@ -163,11 +164,11 @@ You only need a `GOOGLE_API_KEY` to start - get one free at https://aistudio.goo
 Open the **Setup** tab and:
 
 1. Paste your profile into the **Profile** textarea. Be specific. Stack, years of experience, salary floor, location constraints, hard nos. The richer this is, the better Stage 1 filters.
-2. Pick your **sources** - LinkedIn, Y Combinator startups, and/or Hacker News "Who is Hiring?". For YC you can set a max team size (to target small startups) and a YC-specific freshness window ("YC max hours old", default 720); YC and HN each have a remote-only toggle. The global "Max hours old" governs LinkedIn/Indeed/HN only.
-3. Edit **Search Terms** - one per line. These get passed to JobSpy as LinkedIn/Indeed queries. (YC scrapes whole companies, so Stage 1's LLM does the matching there.)
+2. Pick your **sources** - LinkedIn, Y Combinator startups, Hacker News "Who is Hiring?", and/or HeadHunter, in any combination. For YC you can set a max team size (to target small startups) and a YC-specific freshness window ("YC max hours old", default 720); YC, HN and hh each have a remote-only toggle. hh needs a region picked, it has no default. The global "Max hours old" governs LinkedIn, HN and hh.
+3. Edit **Search Terms** - one per line. LinkedIn and hh each have their own box, so terms don't bleed between them. Leave a box empty and nothing is scraped for that source; there is no default term. (YC and HN read whole companies/threads, so Stage 1's LLM does the matching there.)
 4. Edit the **Hard Rejects** keyword list. Anything matched here gets auto-BAD without burning an LLM call. Default list catches the obvious staffing/recruiting/US-only stuff. You can export/import this as a `.txt` to share with others.
 5. Pick your backends. Brain 1's Stage 1 and Enrichment are set separately, and every picker is live - it asks the provider what it serves today rather than reading a list I hardcoded and forgot to update. Defaults are sensible: Gemma 4 for Brain 1, Gemini Flash for Brain 2. On Google you can pick either family; Gemma is the free tier (Google may train on what you send it), Gemini is paid and they don't.
-6. **Fastest start: hit the orange "Parse server DB" button** at the top of Setup. It pulls down ~1,900 companies I've already researched plus ~3,100 YC and Hacker News listings, so your first run has something to judge and skips the research bill on companies already known. Nothing in it is judged for you - your profile decides. It brings no contacts and no LinkedIn/Indeed listings; hunt and scrape those yourself.
+6. **Fastest start: hit the orange "Parse server DB" button** at the top of Setup. It pulls down ~1,900 companies I've already researched plus ~3,100 YC and Hacker News listings, so your first run has something to judge and skips the research bill on companies already known. Nothing in it is judged for you - your profile decides. It brings no contacts and no LinkedIn listings; hunt and scrape those yourself.
 7. **Strongly recommended: add a `TAVILY_API_KEY` or `SERPER_API_KEY`** (both have free tiers). The keyless fallback works from some connections and not others - datacenter IPs get starved and several countries get captcha-walled, and when search silently returns nothing the company research quietly gets much worse. I found this the hard way: 92% of one enrichment run came back with no sources read. With a key it was 0%.
 8. (Optional) Hit **Backfill embeddings** to enable "similar past applications" over jobs you scraped before the RAG feature existed.
 
@@ -187,7 +188,7 @@ Your `keys.py` is gitignored. Don't commit it.
 
 ## Known limitations
 
-- **JobSpy can be flaky** - LinkedIn occasionally rate-limits, and JobSpy 1.1.82 has a bug where it mis-parses some listings' locations into an invalid-country error that aborts the whole scrape. HunterJobs patches around that at runtime (see the comment block in `pipeline/brain1.py`), but a search term can still occasionally produce nothing on a given day.
+- **LinkedIn rate-limits, and it lies when it does.** Rapid requests make live listings return 404, so the scraper paces itself and treats a single 404 as a rumour rather than a death. A search term can still produce nothing on a given day; when coverage is incomplete the log says so instead of pretending.
 - **YC WaaS-fallback jobs have no real posted date** - companies without a discoverable ATS board only expose rounded relative ages ("5 months"). Rather than show a date I back-computed and can't defend, those listings say `listed <when I first saw it>` - which is the only thing I actually know. The first-seen ledger decides what's new.
 - **LinkedIn doesn't always return a posting date or location** - some rows show blank for those. That's upstream data, not a bug.
 - **Local models < 20B params chat poorly with tools.** They'll echo the tool result back into their text. Snapshot generation with local models is fine; chat works best with Gemini or Claude.
@@ -198,10 +199,49 @@ Your `keys.py` is gitignored. Don't commit it.
 
 ## Changelog & Roadmap
 
+### v0.9.0 - on main, not yet released
+
+- **Every scraper is mine now.** Dropped `python-jobspy` entirely. On the same
+  search term and 24h window, both running to exhaustion, mine returned **976
+  listings to its 119**. What it was doing: advancing the page offset by the
+  running total instead of the page size (so it skipped whole pages), treating
+  the first empty page as the end (empty pages happen mid-run), sorting by
+  relevance while reporting date order, and passing filters LinkedIn silently
+  ignores - so "remote only" never filtered anything. None of it raised an
+  error. Indeed went with it; its scraper had returned nothing across 21 terms.
+- **HeadHunter (hh) is a source now** - the CIS market, which nothing else here
+  reached. No API key needed:
+  the documented API answers 403 to anonymous reads these days, but every search
+  page still embeds its entire state as JSON, so there are no selectors to
+  drift. It publishes **real salary ranges and exact posting timestamps**, which
+  no other source here gives me. Two things it does that bite if you assume
+  otherwise: results are not in date order, even when you ask for it, so it
+  filters client-side instead of stopping at the first old row; and employers
+  can bump a listing, so a job created in May can surface under a one-day
+  window. Remote comes from hh's own REMOTE / ON_SITE / HYBRID field rather than
+  from guessing at the title.
+- **Company research actually works now.** A listing carries a company name and
+  no website, so research had nothing to read and kept answering "No
+  information available". The listing links to a company page, and that page
+  has the real site. One run before and after: research failures **37 → 0**,
+  contacts found **6 → 84**, and 11 staffing agencies caught for free because
+  they file themselves under "Staffing and Recruiting".
+- **Listing pulse** - opt-in, per source. Asks listings whether they still
+  exist instead of expiring them on a timer. Worth it: the ten oldest listings
+  in my pool were five weeks old and every one was still open.
+- **Sources each get their own block in Setup** - own toggle, own settings, own
+  search terms. Nothing bleeds between them, and there are no invented
+  defaults: empty search terms means that source doesn't run.
+- **Fixed a scraper that was quietly losing 36% of Hacker News.** A 200 cap on
+  a 311-comment thread, always trimming the tail. Every stage now logs its own
+  losses: `311 ids -> 311 fetched -> 274 parsed`.
+- **Degeneration guard catches phrase loops**, not just single stuttered words.
+- Test suite 134 -> 195
+
 ### v0.8.5 - shipped
 
 - **Parse server DB** - one orange button in Setup pulls down everything already researched on [hunterjobsats.com](https://hunterjobsats.com): ~1,900 companies (what they build, real stack, hiring signal, staffing-agency flags) plus ~3,100 YC and Hacker News listings to judge. Your first run has something to chew on and skips the research bill on companies that are already known
-- **What the seed will never contain**: contacts, my verdicts, or LinkedIn/Indeed listings. Contacts are personal data and yours to hunt on your own keys. Verdicts depend on your profile, not mine, so everything arrives QUEUED. And redistributing LinkedIn text is the line between analysing public postings and running a listings database - scrape those yourself, it takes twenty minutes
+- **What the seed will never contain**: contacts, my verdicts, or LinkedIn listings. Contacts are personal data and yours to hunt on your own keys. Verdicts depend on your profile, not mine, so everything arrives QUEUED. And redistributing LinkedIn text is the line between analysing public postings and running a listings database - scrape those yourself, it takes twenty minutes
 - **Both reads survive** - imported research lands in its own table, so it never overwrites yours. Each job shows SERVER INTEL beside YOUR RESEARCH; where they disagree is worth a look
 - **Companies tab** - search everything you have intel on, grows as you scroll. Useful the night before an interview
 - **Live model pickers everywhere** - no hardcoded model lists left to go stale. Every backend asks the provider what it serves today, with sensible picks pinned on top. Google now offers Gemini as well as Gemma: same client, and the paid tier means they don't train on what you send

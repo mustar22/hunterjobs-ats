@@ -31,6 +31,7 @@ def source_pill(source: str) -> str:
         "indeed":   ("Indeed",   "#003A9B", "#fff"),
         "yc":       ("YC",       "linear-gradient(90deg, #ff3d00, #ff8c00)", "#fff"),
         "hn":       ("HN",       "linear-gradient(90deg, #ff8c00, #ffd000)", "#1a1300"),
+        "hh":       ("hh",       "#d6001c", "#fff"),
     }
     key = (source or "").strip().lower()
     if key in brands:

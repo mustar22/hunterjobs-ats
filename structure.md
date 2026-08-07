@@ -11,7 +11,7 @@ dashboard.py            entry point — config/DB/heartbeat bootstrap, @ui.page(
 core/                   leaf layer, no deps on pipeline/ui
   config.py             DEFAULT_CONFIG + config.json load/save, API key loading
   database.py           SQLite schema (WAL + FTS5), DB at core/db/hunterjobs_ats.db
-  ledger.py             seen_jobs helpers — first/last sighting, judged flag, expiry
+  ledger.py             seen_jobs helpers — sightings, judged flag, expiry, census diff
   companies.py          company intel cache (companies table) — key/get/save, TTL
   websearch.py          pluggable web search: Tavily/Serper when keyed, ddgs fallback
   schemas.py            Pydantic models for structured LLM outputs
@@ -22,7 +22,10 @@ pipeline/
   brain1.py             the scan: scrape → Stage 1 filter → enrichment
   enrich.py             per-company research + contacts in ONE LLM call, cache-first
   metering.py           ScanMeter — per-scan Stage 1 cap + scan_usage row
+  listing_pulse.py      opt-in liveness check — asks listings if they still exist
   sources/hn.py         HN "Who is hiring?" source (Algolia + Firebase, no auth)
+  sources/linkedin.py   LinkedIn source — time-window enumeration, no keywords needed
+  sources/hh.py         HeadHunter (CIS) source — no API key, region-selected
   brain2.py             market analyst snapshot (7-day aggregate → LLM)
   brain2_chat.py        persistent analyst chat with read-only SQL tool
   process_control.py    detached process spawn/kill + heartbeat thread
@@ -30,6 +33,7 @@ pipeline/
   run_brain2.py         same for brain2
   run_scrape.py         scrape only — everything lands QUEUED, judged later
   run_enrich.py         enrich only — research companies, no scraping/judging
+  run_pulse.py          `python -m pipeline.run_pulse <sources> <limit>` (detached)
 
 ui/                     NiceGUI dashboard
   theme.py              logo, palette, CSS
@@ -53,7 +57,7 @@ fetcher — all state (dedup, freshness, metering) lives in HunterJobs' DB.
 
 1. **Drain**: QUEUED jobs from previous scans are judged first, FIFO by
    `date_scraped`, spending from this scan's cap.
-2. **Scrape**: JobSpy terms (LinkedIn/Indeed), then YC, then HN. Every row goes
+2. **Scrape**: LinkedIn terms, then YC, then HN, then hh. Every row goes
    through one choke point, `_process_row`:
    - ledger sighting (`seen_jobs`: first_seen/last_seen)
    - skip if the job id is already in the DB — known jobs are never re-judged,
@@ -75,7 +79,7 @@ fetcher — all state (dedup, freshness, metering) lives in HunterJobs' DB.
 
 ## Identity & freshness rules
 
-- Job id = native id where the source has one (JobSpy numeric, `hn_<comment>`),
+- Job id = native id where the source has one (`li-<id>`, `hh-<id>`, `hn_<comment>`),
   else `company_title_<sha1(url)[:8]>`. Dates are never part of the id — WaaS
   dates are scrape-time estimates that drift daily.
 - `date_posted_estimated=1` marks WaaS dates. They are never displayed: the

@@ -52,6 +52,7 @@ from core.database import get_db_connection, init_db
 from core.schemas import JobFilter, CompanyResearch
 from pipeline.sources import hn
 from pipeline.sources import linkedin as li
+from pipeline.sources import hh
 from pipeline.metering import ScanMeter
 import core.embeddings as embeddings
 import core.ledger as ledger
@@ -1392,10 +1393,11 @@ def linkedin_enabled(sources: list[str]) -> bool:
     return "linkedin" in (sources or [])
 
 
-def has_scrape_source(sources: list[str], use_yc: bool, use_hn: bool = False) -> bool:
-    """True when there is anything to scrape at all — LinkedIn, YC, or HN.
+def has_scrape_source(sources: list[str], use_yc: bool, use_hn: bool = False,
+                      use_hh: bool = False) -> bool:
+    """True when there is anything to scrape at all — LinkedIn, YC, HN or hh.
     When all are off there is genuinely nothing to do (vs. silently forcing LinkedIn)."""
-    return bool(sources) or bool(use_yc) or bool(use_hn)
+    return bool(sources) or bool(use_yc) or bool(use_hn) or bool(use_hh)
 
 
 # ── Main entry: sequential Stage 1 → Stage 2 → Stage 3 ────────────────────────
@@ -1405,9 +1407,12 @@ def run_brain1() -> None:
     profile_text = cfg.get("profile", "")
     geo_text = cfg.get("geo_eligibility", "")
 
-    search_terms = [
-        t.strip() for t in cfg.get("search_terms", "").splitlines() if t.strip()
-    ] or ["machine learning engineer remote"]
+    def _terms(key: str) -> list[str]:
+        """Per-source terms, falling back to the shared list when empty."""
+        raw = (cfg.get(key) or "").strip() or cfg.get("search_terms", "")
+        return [t.strip() for t in raw.splitlines() if t.strip()]
+
+    search_terms = _terms("linkedin_search_terms")
     hard_rejects = [
         t.strip() for t in cfg.get("hard_rejects", "").splitlines() if t.strip()
     ]
@@ -1417,6 +1422,7 @@ def run_brain1() -> None:
     sources = cfg.get("sources", ["linkedin"])
     use_yc = bool(cfg.get("use_yc"))
     use_hn = bool(cfg.get("use_hn"))
+    use_hh = bool(cfg.get("use_hh"))
     results_wanted = int(cfg.get("results_wanted", 100))
     hours_old = int(cfg.get("hours_old", 72))
     yc_hours_old = int(cfg.get("yc_hours_old", 720))
@@ -1441,7 +1447,7 @@ def run_brain1() -> None:
 
     # All sources off + empty queue = nothing to do. With QUEUED backlog it's a
     # legit drain-only run: judge leftovers without re-scraping anything.
-    if not has_scrape_source(sources, use_yc, use_hn):
+    if not has_scrape_source(sources, use_yc, use_hn, use_hh):
         init_db()
         _c = get_db_connection()
         try:
@@ -1674,7 +1680,11 @@ def run_brain1() -> None:
                         if not aborted and linkedin_enabled(sources)
                         and all(_scrape_allowed(s, s) for s in sources) else [])
         if not scrape_terms:
-            log.info("[stage1] LinkedIn not selected; skipping term scrape.")
+            if linkedin_enabled(sources):
+                log.warning("[stage1] LinkedIn is on but has no search terms — "
+                            "skipping. Add them in Setup.")
+            else:
+                log.info("[stage1] LinkedIn not selected; skipping term scrape.")
         for term_idx, term in scrape_terms:
             if not runner_status.dashboard_is_alive(max_age_seconds=90):
                 log.warning("Dashboard heartbeat lost (>90s). Self-terminating.")
@@ -1749,6 +1759,41 @@ def run_brain1() -> None:
                 if not _process_row(row, "(HN)"):
                     aborted = True
                     break
+
+        # ── HeadHunter (CIS: Russia, Uzbekistan, Kazakhstan, Belarus) ────────
+        if not aborted and use_hh and _scrape_allowed("hh", "hh"):
+            area = (cfg.get("hh_area") or "").strip()
+            if not area:
+                log.warning("[stage1] hh is on but no region is set — skipping. "
+                            "Pick one in Setup; there's no sensible default.")
+                hh_terms = []
+            else:
+                hh_terms = _terms("hh_search_terms")
+            # hh is a general board with ~900k live vacancies, so termless is
+            # noise - it runs per search term like LinkedIn, not like YC/HN
+            for term_idx, term in enumerate(hh_terms, 1):
+                if aborted or not runner_status.dashboard_is_alive(max_age_seconds=90):
+                    aborted = True
+                    break
+                runner_status.patch(
+                    "brain1", stage1=f"scraping hh '{term}' ({term_idx}/{len(hh_terms)})")
+                hh_stats: dict = {}
+                hh_rows = hh.scrape_hh_jobs(hours=hours_old, area=area, text=term,
+                                            limit=results_wanted or None,
+                                            stats=hh_stats)
+                log.info(f"[stage1] hh '{term}' (area={area}): {len(hh_rows)} listings")
+                if not hh_stats.get("complete"):
+                    log.warning(f"[stage1] hh '{term}': incomplete — "
+                                f"{hh_stats.get('reason')}")
+                if cfg.get("hh_remote_only", False):
+                    before = len(hh_rows)
+                    hh_rows = apply_yc_remote_filter(hh_rows, True)
+                    log.info(f"[stage1] hh remote filter: dropped "
+                             f"{before - len(hh_rows)}, kept {len(hh_rows)}")
+                for row in hh_rows:
+                    if not _process_row(row, f"(hh {term_idx})"):
+                        aborted = True
+                        break
 
         # ── Stage 1 done; start Stage 2 on collected GOODs ────────────────────
         if aborted:

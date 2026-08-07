@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
     # remote scope, timezone.
     "geo_eligibility": "",
     "search_terms": "machine learning engineer\ngenerative AI engineer",
+    "linkedin_search_terms": "",   # per-source; empty = use search_terms
     "hard_rejects": "US citizenship required\nW2 only\nsecurity clearance",
     # Agency-suspects the user dismissed as "not an agency" — kept out of suggestions.
     "dismissed_suspects": [],
@@ -50,6 +51,11 @@ DEFAULT_CONFIG = {
     "use_hn": False,
     "hn_remote_only": True,
     "hn_max_jobs": 1000,   # a guard, not a trim: threads run 300+
+    # HeadHunter — the CIS board. area picks the market, not the domain.
+    "use_hh": False,
+    "hh_area": "",             # no default: the market is the user's call
+    "hh_search_terms": "",     # falls back to the global search_terms
+    "hh_remote_only": False,   # hh listings rarely say; a filter here loses too much
     "results_wanted": 100,
     "hours_old": 72,
     # Per-scan cap on Stage 1 LLM verdicts (0 = unlimited). Hard-rejects and

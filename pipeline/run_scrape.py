@@ -17,6 +17,7 @@ from core.config import load_config
 from core.database import get_db_connection, init_db
 import pipeline.brain1 as b1
 from pipeline.sources import hn
+from pipeline.sources import hh
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def run_scrape(only: set[str] | None = None) -> dict:
     want = (lambda name: (only is None or name in only))
     init_db()
     conn = get_db_connection()
-    counts = {"linkedin": 0, "hn": 0, "yc": 0}
+    counts = {"linkedin": 0, "hn": 0, "yc": 0, "hh": 0}
     try:
         sources = [s for s in (cfg.get("sources") or [])
                    if s == "linkedin" and want(s)]
@@ -72,6 +73,14 @@ def run_scrape(only: set[str] | None = None) -> dict:
             rows = b1.apply_yc_date_filter(hn.scrape_hn_jobs(cfg),
                                            int(cfg.get("hours_old", 720)))
             counts["hn"] = _store(conn, rows, "HN")
+        if cfg.get("use_hh") and want("hh"):
+            area = cfg.get("hh_area", "uzbekistan")
+            print(f"[*] scraping HeadHunter (area={area})…")
+            for term in (terms or [""]):
+                rows = hh.scrape_hh_jobs(hours=int(cfg.get("hours_old", 720)),
+                                         area=area, text=term,
+                                         limit=int(cfg.get("results_wanted", 50)) or None)
+                counts["hh"] += _store(conn, rows, f"hh:{term or 'all'}")
         if cfg.get("use_yc") and want("yc"):
             rows = b1.apply_yc_date_filter(b1.safe_scrape_yc(cfg),
                                            int(cfg.get("yc_hours_old", 720)))
