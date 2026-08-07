@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.8.5-9d6fff" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.0-9d6fff" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue" />
   <img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-orange" />
   <img alt="tests" src="https://github.com/mustar22/hunterjobs-ats/actions/workflows/test.yml/badge.svg" />
@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <sub><strong>v0.8.5 just shipped</strong> - one button pulls down a few thousand companies I already researched plus YC/HN listings to judge, every model picker is live. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
+  <sub><strong>v0.9.0 just shipped</strong> - every scraper is mine now, jobspy is gone, and HeadHunter joins the sources. <a href="#changelog--roadmap">See changelog &darr;</a></sub>
 </p>
 
 ---
@@ -199,135 +199,105 @@ Your `keys.py` is gitignored. Don't commit it.
 
 ## Changelog & Roadmap
 
-### v0.9.0 - on main, not yet released
+### v0.9.0 - shipped
 
-- **Every scraper is mine now.** Dropped `python-jobspy` entirely. On the same
-  search term and 24h window, both running to exhaustion, mine returned **976
-  listings to its 119**. What it was doing: advancing the page offset by the
-  running total instead of the page size (so it skipped whole pages), treating
-  the first empty page as the end (empty pages happen mid-run), sorting by
-  relevance while reporting date order, and passing filters LinkedIn silently
-  ignores - so "remote only" never filtered anything. None of it raised an
-  error. Indeed went with it; its scraper had returned nothing across 21 terms.
-- **HeadHunter (hh) is a source now** - the CIS market, which nothing else here
-  reached. No API key needed:
-  the documented API answers 403 to anonymous reads these days, but every search
-  page still embeds its entire state as JSON, so there are no selectors to
-  drift. It publishes **real salary ranges and exact posting timestamps**, which
-  no other source here gives me. Two things it does that bite if you assume
-  otherwise: results are not in date order, even when you ask for it, so it
-  filters client-side instead of stopping at the first old row; and employers
-  can bump a listing, so a job created in May can surface under a one-day
-  window. Remote comes from hh's own REMOTE / ON_SITE / HYBRID field rather than
-  from guessing at the title.
-- **Company research actually works now.** A listing carries a company name and
-  no website, so research had nothing to read and kept answering "No
-  information available". The listing links to a company page, and that page
-  has the real site. One run before and after: research failures **37 → 0**,
-  contacts found **6 → 84**, and 11 staffing agencies caught for free because
-  they file themselves under "Staffing and Recruiting".
-- **Listing pulse** - opt-in, per source. Asks listings whether they still
-  exist instead of expiring them on a timer. Worth it: the ten oldest listings
-  in my pool were five weeks old and every one was still open.
-- **Sources each get their own block in Setup** - own toggle, own settings, own
-  search terms. Nothing bleeds between them, and there are no invented
-  defaults: empty search terms means that source doesn't run.
-- **Fixed a scraper that was quietly losing 36% of Hacker News.** A 200 cap on
-  a 311-comment thread, always trimming the tail. Every stage now logs its own
-  losses: `311 ids -> 311 fetched -> 274 parsed`.
-- **Degeneration guard catches phrase loops**, not just single stuttered words.
-- Test suite 134 -> 195
+- **Every scraper is mine.** Dropped `python-jobspy`: same term, same window, both run to exhaustion, **976 listings to its 119**. It skipped pages, stopped on the first empty one, sorted by relevance while reporting date order, and passed filters LinkedIn ignores. None of it raised an error. Indeed went with it - its scraper had returned nothing across 21 terms
+- **HeadHunter (hh) source** - the CIS market, which nothing else here reached. No API key: the documented API 403s now, but every search page embeds its own state as JSON. The only source here that gives **real salary ranges and exact timestamps**. Results aren't in date order even when you ask, so it filters client-side instead of stopping at the first old row
+- **Company research actually works** - a listing with no website left research nothing to read. It links to a company page, and that page has the real domain. Research failures **37 → 0**, contacts **6 → 84**, and 11 staffing agencies caught free because they file themselves under "Staffing and Recruiting"
+- **Listing pulse** - opt-in, per source. Asks listings whether they still exist instead of expiring them on a timer. The ten oldest in my pool were five weeks old and every one was still open
+- **Per-source blocks in Setup** - own toggle, own settings, own search terms. No invented defaults: empty terms means that source doesn't run
+- **Fixed a scraper quietly losing 36% of Hacker News** - a 200 cap on a 311-comment thread, always trimming the tail. Every stage logs its own losses now
+- **Degeneration guard catches phrase loops**, not just single stuttered words
+- Test suite 134 → 201
 
 ### v0.8.5 - shipped
 
-- **Parse server DB** - one orange button in Setup pulls down everything already researched on [hunterjobsats.com](https://hunterjobsats.com): ~1,900 companies (what they build, real stack, hiring signal, staffing-agency flags) plus ~3,100 YC and Hacker News listings to judge. Your first run has something to chew on and skips the research bill on companies that are already known
-- **What the seed will never contain**: contacts, my verdicts, or LinkedIn listings. Contacts are personal data and yours to hunt on your own keys. Verdicts depend on your profile, not mine, so everything arrives QUEUED. And redistributing LinkedIn text is the line between analysing public postings and running a listings database - scrape those yourself, it takes twenty minutes
-- **Both reads survive** - imported research lands in its own table, so it never overwrites yours. Each job shows SERVER INTEL beside YOUR RESEARCH; where they disagree is worth a look
-- **Companies tab** - search everything you have intel on, grows as you scroll. Useful the night before an interview
-- **Live model pickers everywhere** - no hardcoded model lists left to go stale. Every backend asks the provider what it serves today, with sensible picks pinned on top. Google now offers Gemini as well as Gemma: same client, and the paid tier means they don't train on what you send
-- **Run one step on its own** - a drawer in Setup with Scrape only and Enrich only, for when you want listings banked now and the LLM spend later
-- **Companies tab reads the seed** - it only ever queried your own research, so anyone whose companies came from the imported seed - which is every new install - saw an empty grid. It now shows both, yours winning on a clash, seeded rows labelled SERVER INTEL
-- Test suite 133 -> 134
+- **Parse server DB** - one button pulls down ~1,900 companies already researched on [hunterjobsats.com](https://hunterjobsats.com) plus ~3,100 YC and HN listings, so your first run has something to judge
+- **What the seed never contains**: contacts, my verdicts, or LinkedIn listings. Everything arrives QUEUED - your profile decides, not mine
+- **Both reads survive** - imported research lands in its own table and never overwrites yours. SERVER INTEL sits beside YOUR RESEARCH; where they disagree is worth a look
+- **Companies tab** - search everything you have intel on. Useful the night before an interview
+- **Live model pickers everywhere** - every backend asks the provider what it serves today. Google offers Gemini as well as Gemma; the paid tier means they don't train on what you send
+- **Run one step on its own** - Scrape only / Enrich only, for banking listings now and spending later
+- Fixed: the Companies tab only queried your own research, so every new install saw an empty grid
+- Test suite 133 → 134
 
 ### v0.7.0 - shipped
 
-- **Write your own evaluation brief** - the judge's mission is now yours to rewrite in Setup. GOOD/MAYBE/BAD stays fixed (everything downstream depends on it), but what counts as good is up to you. Job hunting is just the default; point it at any listing-shaped text and it will judge that instead. There's a Restore default button when you inevitably break it
-- **Work mode and visa flags** - the judge now reads whether a listing is remote, hybrid or onsite, and whether it demands US work authorization. Both show as badges, both filter. Rough by nature, LinkedIn especially, so treat them as hints not gospel
-- **Claude as a Stage 1 backend** - alongside Gemma, OpenAI, OpenRouter and LM Studio. Haiku by default because Stage 1 reads hundreds of listings and small models are the point
-- **Per-source queues** - pick HN only and you get HN only. Sources you turned off no longer sneak into the queue drain, and nothing rescrapes while a source still owes verdicts
-- **Token lock on Stage 1** - output capped at 256 tokens per verdict, reject reasons clamped. A rewritable prompt should not be able to run up your bill
-- **YC per-company cap** - one company can't flood the pool anymore. Learned this the hard way when a YC startup's ATS slug collided with a UK staffing giant and 2,575 nurse listings walked in
-- Test suite 120 -> 133
+- **Write your own evaluation brief** - the judge's mission is yours to rewrite. GOOD/MAYBE/BAD stays fixed, but what counts as good is up to you. Point it at any listing-shaped text and it judges that instead
+- **Work mode and visa flags** - remote/hybrid/onsite and US-authorization demands, both as badges, both filterable. Rough by nature, so hints not gospel
+- **Claude as a Stage 1 backend** - Haiku by default, because Stage 1 reads hundreds of listings and small models are the point
+- **Per-source queues** - pick HN only and you get HN only
+- **Token lock on Stage 1** - 256 tokens per verdict. A rewritable prompt shouldn't be able to run up your bill
+- **YC per-company cap** - learned the hard way when a YC slug collided with a UK staffing giant and 2,575 nurse listings walked in
+- Test suite 120 → 133
 
 ### v0.6.0 - shipped
 
-- **Enrichment rebuilt** - the old Stage 2 (research) and Stage 3 (contacts) merged into ONE LLM call per company, fed with everything gathered first: YC profile data, the company site (homepage &rarr; /about &rarr; web-search fallback - no more judging on "(fetch failed)"), team pages, GitHub orgs
-- **YC founders as contacts** - founder names + titles pulled from the public YC company profile, marked `verified via yc`. For YC jobs this alone puts a real decision-maker on nearly every card
-- **Emails read straight from postings** - "email us at jane (at) acme (dot) com" in the listing (common on HN) becomes a verified contact for free, and skips the rest of the hunt
-- **Company cache** - new `companies` table: research + contacts once per company across jobs AND scans (TTL, Setup field). N listings at one company = one pass
-- **Pluggable web search** - optional `TAVILY_API_KEY` / `SERPER_API_KEY` in keys.py for reliable search; keyless ddgs remains the default so no account is ever required
-- Contact precision: strict person-name guard (no more LLM placeholders or marketing headings as "people"), team-page crawl skipped when founders are known (kills customer-testimonials-as-team), literal "null" titles sanitized
-- Test suite 94 &rarr; 120
+- **Enrichment rebuilt** - the old Stage 2 and Stage 3 merged into one LLM call per company, fed with everything gathered first: YC data, the company site, team pages, GitHub orgs
+- **YC founders as contacts** - names and titles from the public YC profile, marked `verified via yc`. For YC jobs this alone puts a decision-maker on nearly every card
+- **Emails read straight from postings** - common on HN, free, and skips the rest of the hunt
+- **Company cache** - research and contacts once per company across jobs *and* scans. N listings at one company = one pass
+- **Pluggable web search** - optional Tavily/Serper keys; keyless ddgs stays the default so no account is ever required
+- Contact precision: strict person-name guard, team-page crawl skipped when founders are known
+- Test suite 94 → 120
 
 ### v0.5.0 - shipped
 
-- **First-seen ledger** - every job identity gets `first_seen_at` / `last_seen_at` in a new `seen_jobs` table. A job is judged **once, ever**: re-scrapes and listing edits never burn another LLM call. This also fixed a real leak where WaaS jobs (whose dates are scrape-time estimates) minted a new id every day and got silently re-judged
-- **Per-scan LLM budget** - `max_llm_jobs_per_scan` (Setup field, default 100, 0 = off) caps how many Stage 1 verdicts one scan may spend. Hard-rejects stay free. Overflow is stored as `QUEUED` and judged next scan, oldest first; with all sources unticked a scan becomes a pure queue-drain run (no scraping)
-- **Usage metering** - every scan writes a `scan_usage` row: scraped / hard-rejected / judged / queued / Stage 2 / Stage 3 counts. Killed scans get closed out honestly as `interrupted`
-- **Honest dates** - WaaS-estimated dates are flagged, shown as `~date`, and never drive freshness filtering; ATS boards and HN keep real dates (HN now at exact comment-time precision)
-- **"First seen" everywhere** - jobs list sorts newest-sighted-first with a time-window filter (24h / 3d / 7d / 30d); counts row split into Judged (LLM) / Bad / Hard Rej / Queued so free keyword kills stop masquerading as LLM verdicts
-- **UI quality** - job expansions stay open across refreshes (manual research no longer collapses your tabs); permutation email guesses hidden behind a per-job toggle, marked red, and sorted last - guessed means guessed
-- Migration: `python scripts/migrate_v05.py` (backs up your DB, stabilizes YC ids, backfills the ledger). Test suite 58 → 94
+- **First-seen ledger** - a job is judged **once, ever**. Re-scrapes and listing edits never burn another LLM call
+- **Per-scan LLM budget** - caps Stage 1 verdicts per scan; overflow stored QUEUED and drained oldest-first
+- **Usage metering** - every scan writes its own counts. Killed scans close out honestly as `interrupted`
+- **Honest dates** - estimated dates are flagged, shown as `~date`, and never drive freshness filtering
+- **"First seen" everywhere** - sorts newest-sighted-first, and counts are split so free keyword kills stop masquerading as LLM verdicts
+- **UI** - expansions survive refreshes; guessed emails marked red and sorted last, because guessed means guessed
+- Migration: `python scripts/migrate_v05.py`. Test suite 58 → 94
 
 ### v0.4.5 - shipped
 
-- **Geo-eligibility filtering** - a Setup field for where you can legally work (base country, passport, work authorization, sponsorship/relocation stance, remote scope, timezone). Stage 1 now sees each role's structured location, remote-status and source, and rejects region-locked / sponsorship-dependent / wrong-region-"remote" roles with a `geo:` reason. Empty field = no geo filtering, no assumptions
-- **~100% YC coverage via Work at a Startup** - WaaS jobs are now scored through the same pipeline, with uncapped company / team-size limits and a YC-specific freshness window (`yc_hours_old`, since WaaS listings stay up for months)
-- **RAG on/off toggle** - turn embeddings + the similar-applications panel off entirely (no embedding calls)
-- **Canonical setup script** - `python scripts/setup.py` does the editable HJ install, clones/editable-installs the YC scraper, and seeds config (a bare `pip install -e .` doesn't pull the scraper)
-- Stage 3 contact-quality fixes: capped LLM output tokens + a degenerate/implausible-name guard; **removed the unverified GitHub `type:org` fallback** that surfaced unrelated developers' personal emails as "verified" (now exact-org lookups only, and a member's email is kept only if it's on the company domain); **ATS/apply hosts now rejected in `clean_domain`** (greenhouse/lever/ashby/etc.) so email permutations stop using shortener domains, preferring the real company website over the apply URL
+- **Geo-eligibility filtering** - a Setup field for where you can legally work. Rejects region-locked, sponsorship-dependent and wrong-region-"remote" roles with a `geo:` reason. Empty field = no assumptions
+- **~100% YC coverage via Work at a Startup**, with a YC-specific freshness window since WaaS listings stay up for months
+- **RAG on/off toggle** and a canonical `python scripts/setup.py`
+- Removed an unverified GitHub fallback that surfaced unrelated developers' personal emails as "verified"; ATS hosts now rejected in `clean_domain` so permutations stop guessing at shortener domains
 
 ### v0.4.3 - shipped
 
-- **Hacker News "Who is Hiring?" source** - newest monthly thread via free HN Algolia + Firebase APIs (no auth), each comment parsed into a job; respects the remote-only and freshness filters
-- **Per-stage Gemma model selection** - Stage 1 / 2 / 3 each pick their own Gemma model from a live picker that fetches the Google AI Studio catalog
-- Fixes: tightened the Stage 2 staffing/agency demote (data-labeling *products* like Trace Labs no longer false-demoted); a guard against runaway/repeating company summaries
+- **Hacker News "Who is Hiring?" source** - newest monthly thread via free HN APIs, no auth, each comment parsed into a job
+- **Per-stage Gemma model selection** from a live catalog
+- Fixes: tightened the agency demote, and a guard against runaway company summaries
 
 ### v0.4.2 - shipped
 
-- **Real contact discovery** - team-page scrape + web search + GitHub org members, real names sorted decision-maker-first, name-to-email permutation, and on-demand per-person targeted email search
-- **YC freshness filter** - YC jobs now respect the same hours-old window as the job boards, so stale listings stop leaking in
+- **Real contact discovery** - team pages, web search and GitHub org members, sorted decision-maker-first
+- **YC freshness filter**, so stale listings stop leaking in
 
 ### v0.4.1 - shipped
 
-- **Stage 3 contact honesty fix** - stopped fabricating names and auto-drafts (the model was inventing the same fake person across companies); multi-contact column + picker UI, honest "no contact" when none found
+- **Stage 3 honesty fix** - stopped fabricating names and drafts (the model was inventing the same fake person across companies); honest "no contact" when none found
 
 ### v0.4 - shipped
 
-- **OpenRouter backend** for Brain 1 and Brain 2 - OpenAI-compatible, with a live model picker that fetches the OpenRouter catalog (searchable, shows free/paid pricing inline)
-- **Brain 2 persona** - an editable voice/behavior field in Setup that shapes both the market snapshot and chat
-- **Package restructure** - flat layout split into `core/` / `pipeline/` / `ui/` packages with a proper `pyproject.toml` editable install; `dashboard.py` slimmed from ~2300 lines to a thin entry point
-- **Dev tooling** - a wipe script to clear personal data before pushing
-- Fixes: stale-PID guard so brains restart cleanly after finishing or being stopped; Brain 2 backend label no longer hardcoded to Gemini
+- **OpenRouter backend** for both brains, with a live searchable model picker
+- **Brain 2 persona** - an editable voice field shaping both snapshot and chat
+- **Package restructure** into `core/` / `pipeline/` / `ui/`; `dashboard.py` from ~2,300 lines to a thin entry point
+- Fixes: stale-PID guard so brains restart cleanly
 
 ### v0.3 - shipped
 
-- **Y Combinator startups as a job source** - via the companion [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper) package; targets small early-stage YC startups and scrapes full descriptions from their ATS boards
-- **Source picker + badges** - run LinkedIn / Indeed / YC in any combination (including YC-only); each job is tagged with a colored source badge
-- **Remote-only filter for YC jobs** - drops non-remote listings before Stage 1 so they don't burn LLM calls
-- Fixes: duplicate-embedding crash on multi-location listings (idempotent embeds + unique IDs), and a NiceGUI timer error from the embeddings backfill
+- **Y Combinator startups as a source**, via the companion [`ycombinator-jobs-scraper`](https://github.com/mustar22/ycombinator-jobs-scraper) package
+- **Source picker + badges** - run LinkedIn / Indeed / YC in any combination
+- **Remote-only filter for YC jobs**, so they don't burn LLM calls
+- Fixes: duplicate-embedding crash on multi-location listings
 
 ### v0.2 - shipped
 
-- **RAG over past applications** - semantic "similar past applications" via sqlite-vec + Gemini embeddings, surfaced passively in each job's panel
-- **OpenAI backend** for Brain 2 (joins Gemini, Gemma, Claude, LM Studio)
-- **Manual "Move to BAD"** button on GOOD/MAYBE jobs
-- **pytest suite + GitHub Actions CI** - green badge above
-- **Hardened JobSpy scraping** - runtime fix for the 1.1.82 invalid-country crash that aborted scrapes containing foreign-location listings
+- **RAG over past applications** - sqlite-vec + Gemini embeddings, surfaced passively in each job's panel
+- **OpenAI backend** for Brain 2
+- **Manual "Move to BAD"** on GOOD/MAYBE jobs
+- **pytest suite + GitHub Actions CI**
+- **Hardened JobSpy scraping** - runtime fix for the 1.1.82 invalid-country crash
 
 ### Later
 
-- Configurable target region/country for scraping
+- Salary parsing now that hh publishes real ranges
 - Multi-thread chat (currently one persistent conversation)
 - Outreach send-tracking with calendar reminders
 
