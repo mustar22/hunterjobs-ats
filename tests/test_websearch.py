@@ -84,3 +84,15 @@ class TestBackendChoice:
         import core.config as c
         monkeypatch.setattr(c, "load_config", lambda: (_ for _ in ()).throw(OSError))
         assert ws._backends("linkedin")
+
+    def test_unticking_every_engine_falls_back(self, monkeypatch):
+        """The UI can produce an empty string; a chain of nothing searches nothing."""
+        self._cfg(monkeypatch, {"search_backends": ""})
+        assert ws._backends("linkedin") == ws.DDGS_BACKEND
+        assert ws._backends("hh").startswith("yandex")
+
+    def test_the_ui_list_holds_only_real_engines(self):
+        # ddgs rejects unknown names and silently drops to 'auto'
+        known = {"yahoo", "brave", "google", "duckduckgo", "startpage",
+                 "mojeek", "wikipedia", "yandex", "grokipedia"}
+        assert set(ws.ENGINES) <= known

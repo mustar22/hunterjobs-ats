@@ -1247,30 +1247,45 @@ def render_setup_tab():
 
                 render_suspects()
 
+        def _src_card(badge_html: str):
+            """One source, its toggle and its own settings — nothing shared."""
+            box = ui.element("div").classes("card").style(
+                "display:flex; flex-direction:column; gap:10px; "
+                "margin-bottom:12px;")
+            with box:
+                ui.html(badge_html)
+            return box
+
+        def _pill(label, bg, fg):
+            return (f'<span style="display:inline-block; background:{bg}; '
+                    f'color:{fg}; font-weight:700; font-size:12px; padding:3px 10px; '
+                    f'border-radius:6px; letter-spacing:.02em;">{label}</span>')
+
         ui.html('<div class="section-title">Web search</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
-            'Used to research a company when it has no reachable website. A Tavily '
-            'or Serper key in <code>keys.py</code> takes priority; these engines are '
-            'the keyless fallback, tried in order. Yandex is the only one that '
-            'indexes the Russian web properly, so <b>it is always used for hh '
-            'listings</b>. It is off for every other source unless you tick it '
-            'below.</div>'
+            'Only used to research a company when it has no reachable website. A '
+            'Tavily or Serper key in <code>keys.py</code> takes priority; these are '
+            'the keyless fallback, tried left to right until one answers.</div>'
         )
-        with ui.row().style("gap: 14px; flex-wrap: wrap; align-items: center;"):
-            backends_in = ui.input(
-                label="Engine order",
-                value=cfg.get("search_backends", "") or "",
-                placeholder=websearch.DDGS_BACKEND)\
-                .props("outlined dense").style("width: 300px;")
-            backends_in.tooltip("Comma separated, tried in order. Blank uses the "
-                                "default. Available: yandex, yahoo, brave, google, "
-                                "duckduckgo, startpage, mojeek, wikipedia.")
-            yandex_cb = ui.checkbox("Allow Yandex for non-hh sources",
-                                    value=bool(cfg.get("search_yandex")))
-            yandex_cb.tooltip("Off by default: a Russian engine only sees Russian "
-                              "queries. Tick it and your LinkedIn/YC/HN company "
-                              "lookups go through Yandex too.")
+        enabled = {e.strip() for e in
+                   (cfg.get("search_backends") or websearch.DDGS_BACKEND).split(",")}
+        engine_cbs = {}
+        with _src_card(_pill("Engines", "#3d3d5c", "#fff")):
+            with ui.row().style("gap: 16px; flex-wrap: wrap; align-items: center;"):
+                for name in websearch.ENGINES:
+                    engine_cbs[name] = ui.checkbox(name, value=name in enabled)
+                yandex_cb = ui.checkbox("yandex",
+                                        value=bool(cfg.get("search_yandex")))
+            ui.html('<div style="font-size:11.5px; color:var(--text-faint);">'
+                    'Tried in the order shown. When I measured these, only Yahoo '
+                    'answered reliably and Brave rate-limited fast, but that '
+                    'depends on your IP, so try them.<br>'
+                    '<b>Yandex is different.</b> hh always uses it, whatever this '
+                    'row says, because nothing else indexes the Russian web '
+                    'properly. The toggle only decides whether LinkedIn, YC and HN '
+                    'go through it too. Left off, a Russian engine only ever sees '
+                    'Russian queries.</div>')
 
         ui.html('<div class="section-title">Scrape Settings</div>')
         with ui.row().style("gap: 14px; flex-wrap: wrap;"):
@@ -1309,20 +1324,6 @@ def render_setup_tab():
                 'margin-bottom:10px;">One block per source. Each keeps its own '
                 'settings so nothing bleeds between them.</div>')
         sources_set = set(cfg["sources"])
-
-        def _src_card(badge_html: str):
-            """One source, its toggle and its own settings — nothing shared."""
-            box = ui.element("div").classes("card").style(
-                "display:flex; flex-direction:column; gap:10px; "
-                "margin-bottom:12px;")
-            with box:
-                ui.html(badge_html)
-            return box
-
-        def _pill(label, bg, fg):
-            return (f'<span style="display:inline-block; background:{bg}; '
-                    f'color:{fg}; font-weight:700; font-size:12px; padding:3px 10px; '
-                    f'border-radius:6px; letter-spacing:.02em;">{label}</span>')
 
         # ── Y Combinator ─────────────────────────────────────────────────────
         with _src_card(_pill("YC", "linear-gradient(90deg,#ff3d00,#ff8c00)", "#fff")):
@@ -1614,7 +1615,9 @@ def render_setup_tab():
                 "search_terms": terms_ta.value,
                 "hard_rejects": rejects_ta.value,
                 "salary_floor": int(floor_in.value or 0),
-                "search_backends": (backends_in.value or "").strip(),
+                # rebuilt in ENGINES order; a toggled set has no order of its own
+                "search_backends": ", ".join(
+                    n for n in websearch.ENGINES if engine_cbs[n].value),
                 "search_yandex": bool(yandex_cb.value),
                 # kept as text: blank inherits, "0" means off — an int can't say both
                 "hh_salary_floor": (hh_floor_in.value or "").strip(),

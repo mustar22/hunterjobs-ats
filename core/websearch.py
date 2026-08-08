@@ -22,6 +22,9 @@ DDGS_MIN_INTERVAL = 3.0
 # measured 2026-08-08: duckduckgo, startpage and mojeek returned nothing at all,
 # every query, both languages. Don't put them back without retesting.
 DDGS_BACKEND = "yahoo, brave"
+# offered in the UI, best first — a toggled set is rebuilt in this order
+ENGINES = ("yahoo", "brave", "google", "duckduckgo", "startpage",
+           "mojeek", "wikipedia")
 # hh is a Russian-language board and Yandex is the only engine that indexes it
 # well (11/14 vs yahoo 6, brave 3 on companies with a known site)
 HH_BACKEND = "yandex, yahoo, brave"
