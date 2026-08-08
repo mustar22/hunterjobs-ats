@@ -9,6 +9,7 @@ number, no rate, no rejection.
 import core.fx as fx
 import pipeline.brain1 as b1
 from ui.helpers import fmt_salary
+from core.config import SALARY_FLOOR_SOURCES, source_salary_floor
 
 RATES = {"fetched_at": 2e9, "as_of": "test",
          "rates": {"RUB": 80.0, "UZS": 12000.0, "KZT": 470.0, "BYN": 3.0,
@@ -141,3 +142,50 @@ class TestGrossIsCarried:
 
     def test_the_column_reaches_the_insert(self):
         assert "salary_gross" in b1.JOB_INSERT_COLS
+
+
+class TestPerSourceFloor:
+    """One number can't fit both the US and the CIS. Blank inherits, "0" is off,
+    and anything unreadable falls back to the global rather than silently
+    becoming 0, which would switch the filter off without saying so."""
+
+    CFG = {"salary_floor": 4500}
+
+    def test_blank_inherits_the_global_floor(self):
+        assert source_salary_floor({**self.CFG, "hh_salary_floor": ""}, "hh") == 4500
+
+    def test_a_missing_key_inherits_too(self):
+        assert source_salary_floor(self.CFG, "hh") == 4500
+
+    def test_an_override_wins(self):
+        assert source_salary_floor({**self.CFG, "hh_salary_floor": "1200"}, "hh") == 1200
+
+    def test_zero_turns_it_off_for_that_source_only(self):
+        cfg = {**self.CFG, "hh_salary_floor": "0"}
+        assert source_salary_floor(cfg, "hh") == 0
+        assert source_salary_floor(cfg, "linkedin") == 4500
+
+    def test_junk_falls_back_instead_of_disabling(self):
+        assert source_salary_floor({**self.CFG, "hh_salary_floor": "abc"}, "hh") == 4500
+
+    def test_none_is_treated_as_blank(self):
+        assert source_salary_floor({**self.CFG, "hh_salary_floor": None}, "hh") == 4500
+
+    def test_negatives_cannot_invert_the_filter(self):
+        assert source_salary_floor({**self.CFG, "hh_salary_floor": "-5"}, "hh") == 0
+
+    def test_a_floor_of_zero_rejects_nothing(self, monkeypatch):
+        _rates(monkeypatch)
+        job = {"salary_min": None, "salary_max": 8_000, "currency": "RUR"}
+        assert b1.below_salary_floor(job, 0) is None
+
+    def test_every_scraped_source_resolves(self):
+        for s in SALARY_FLOOR_SOURCES:
+            assert isinstance(source_salary_floor(self.CFG, s), int)
+
+
+def test_the_shipped_floor_is_off():
+    """A default floor is one person's salary imposed on every market."""
+    from core.config import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["salary_floor"] == 0
+    assert source_salary_floor(DEFAULT_CONFIG, "hh") == 0

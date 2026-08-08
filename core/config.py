@@ -38,9 +38,17 @@ DEFAULT_CONFIG = {
     "dismissed_suspects": [],
     # Companies the user manually staged as suspects (alongside Stage 2 auto-flags).
     "manual_suspects": [],
-    "salary_floor": 4500,
+    # 0 = off, keep everything. A shipped default here would be one person's
+    # number applied to every market on earth.
+    "salary_floor": 0,
+    # Per-source overrides. Blank inherits salary_floor, "0" turns it off for
+    # that source only. One number can't fit both the US and the CIS.
+    "linkedin_salary_floor": "",
+    "yc_salary_floor": "",
+    "hn_salary_floor": "",
+    "hh_salary_floor": "",
     "sources": ["linkedin"],
-    # YC startups are company-based, scraped separately from JobSpy sites.
+    # YC startups are company-based, scraped separately from the job boards.
     "use_yc": False,
     "yc_max_companies": 100,  # 0 = all hiring companies
     "yc_max_team_size": 50,  # 0 = no cap
@@ -110,6 +118,28 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+
+
+SALARY_FLOOR_SOURCES = ("linkedin", "yc", "hn", "hh")
+
+
+def source_salary_floor(cfg: dict, source: str) -> int:
+    """The floor that applies to one source, in monthly USD.
+
+    Blank means "use the global one" and "0" means "off for this source". Those
+    are different answers and an int field can't hold both, so the override is
+    stored as text. Anything unparseable falls back to the global rather than
+    quietly becoming 0, which would switch the filter off without saying so.
+    """
+    global_floor = int(cfg.get("salary_floor") or 0)
+    raw = cfg.get(f"{source}_salary_floor", "")
+    raw = "" if raw is None else str(raw).strip()
+    if not raw:
+        return global_floor
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return global_floor
 
 
 def load_keys() -> dict:

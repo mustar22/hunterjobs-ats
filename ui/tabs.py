@@ -1359,6 +1359,17 @@ def render_setup_tab():
                     .props("outlined dense").style("width: 190px;")
                 hh_remote_cb = ui.checkbox("Remote only",
                                            value=bool(cfg.get("hh_remote_only", False)))
+                hh_floor_in = ui.input(
+                    label="Salary floor (USD/mo)",
+                    value=str(cfg.get("hh_salary_floor", "") or ""),
+                    placeholder=f"blank = {cfg.get('salary_floor', 0)}")\
+                    .props("outlined dense").style("width: 180px;")
+            ui.html('<div style="font-size:11.5px; color:var(--text-faint);">'
+                    'hh is the only source that states pay, so it is the only '
+                    'one a floor can act on. Blank inherits the global floor, '
+                    '<b>0</b> switches it off here. Listings that name no '
+                    'salary are never rejected - about 80% of the tech ones '
+                    'name none.</div>')
             hh_terms_in = ui.textarea(
                 label="hh search terms",
                 value=cfg.get("hh_search_terms", cfg.get("search_terms", "")))\
@@ -1576,6 +1587,8 @@ def render_setup_tab():
                 "search_terms": terms_ta.value,
                 "hard_rejects": rejects_ta.value,
                 "salary_floor": int(floor_in.value or 0),
+                # kept as text: blank inherits, "0" means off — an int can't say both
+                "hh_salary_floor": (hh_floor_in.value or "").strip(),
                 "results_wanted": int(rw_in.value or 100),
                 "hours_old": int(ho_in.value or 72),
                 # `or 0` not 100: 0 is a legit "no cap" choice here

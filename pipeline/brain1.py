@@ -47,7 +47,8 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 
-from core.config import OPENROUTER_URL
+from core.config import (OPENROUTER_URL, SALARY_FLOOR_SOURCES,
+                         source_salary_floor)
 from core.database import get_db_connection, init_db
 from core.schemas import JobFilter, CompanyResearch
 from pipeline.sources import hn
@@ -1440,7 +1441,9 @@ def run_brain1() -> None:
     hard_rejects = [
         t.strip() for t in cfg.get("hard_rejects", "").splitlines() if t.strip()
     ]
-    salary_floor = int(cfg.get("salary_floor") or 0)
+    # per-source: one floor can't fit both the US and the CIS
+    salary_floors = {s: source_salary_floor(cfg, s)
+                     for s in SALARY_FLOOR_SOURCES}
     # companies the user has said are NOT agencies — never auto-blocked
     dismissed = {c.strip().lower() for c in cfg.get("dismissed_suspects", [])
                  if isinstance(c, str) and c.strip()}
@@ -1623,7 +1626,8 @@ def run_brain1() -> None:
             return True
 
         # ── under the stated salary floor (free) ──
-        floor_why = below_salary_floor(job, salary_floor)
+        floor_why = below_salary_floor(
+            job, salary_floors.get(job["source"], 0))
         if floor_why:
             insert_job_with_verdict(conn, job, "BAD", f"hard_reject: {floor_why}")
             counts["hard_rej"] += 1

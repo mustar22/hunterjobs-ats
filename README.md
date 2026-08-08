@@ -166,7 +166,7 @@ Open the **Setup** tab and:
 1. Paste your profile into the **Profile** textarea. Be specific. Stack, years of experience, salary floor, location constraints, hard nos. The richer this is, the better Stage 1 filters.
 2. Pick your **sources** - LinkedIn, Y Combinator startups, Hacker News "Who is Hiring?", and/or HeadHunter, in any combination. For YC you can set a max team size (to target small startups) and a YC-specific freshness window ("YC max hours old", default 720); YC, HN and hh each have a remote-only toggle. hh needs a region picked, it has no default. The global "Max hours old" governs LinkedIn, HN and hh.
 3. Edit **Search Terms** - one per line. LinkedIn and hh each have their own box, so terms don't bleed between them. Leave a box empty and nothing is scraped for that source; there is no default term. (YC and HN read whole companies/threads, so Stage 1's LLM does the matching there.)
-4. Edit the **Hard Rejects** keyword list. Anything matched here gets auto-BAD without burning an LLM call. Default list catches the obvious staffing/recruiting/US-only stuff. You can export/import this as a `.txt` to share with others. The **salary floor** (monthly USD) is a hard reject too, but only against a stated salary - a listing that doesn't name a number is never rejected for it. Set it to 0 to switch it off.
+4. Edit the **Hard Rejects** keyword list. Anything matched here gets auto-BAD without burning an LLM call. Default list catches the obvious staffing/recruiting/US-only stuff. You can export/import this as a `.txt` to share with others. The **salary floor** (monthly USD) is a hard reject too, but only against a stated salary - a listing that doesn't name a number is never rejected for it. Set it to 0 to switch it off. hh carries its own floor in its own block, since a number that's fair on LinkedIn wipes out the CIS.
 5. Pick your backends. Brain 1's Stage 1 and Enrichment are set separately, and every picker is live - it asks the provider what it serves today rather than reading a list I hardcoded and forgot to update. Defaults are sensible: Gemma 4 for Brain 1, Gemini Flash for Brain 2. On Google you can pick either family; Gemma is the free tier (Google may train on what you send it), Gemini is paid and they don't.
 6. **Fastest start: hit the orange "Parse server DB" button** at the top of Setup. It pulls down ~1,900 companies I've already researched plus ~3,100 YC and Hacker News listings, so your first run has something to judge and skips the research bill on companies already known. Nothing in it is judged for you - your profile decides. It brings no contacts and no LinkedIn listings; hunt and scrape those yourself.
 7. **Strongly recommended: add a `TAVILY_API_KEY` or `SERPER_API_KEY`** (both have free tiers). The keyless fallback works from some connections and not others - datacenter IPs get starved and several countries get captcha-walled, and when search silently returns nothing the company research quietly gets much worse. I found this the hard way: 92% of one enrichment run came back with no sources read. With a key it was 0%.
@@ -209,6 +209,7 @@ Your `keys.py` is gitignored. Don't commit it.
 - **Fixed a scraper quietly losing 36% of Hacker News** - a 200 cap on a 311-comment thread, always trimming the tail. Every stage logs its own losses now
 - **The salary floor is real now.** It was a Setup field that filtered nothing - editable, documented, wired to nothing. It rejects for free, before any LLM call, but only when the stated pay converts cleanly to USD and still lands under your floor. No salary means no rejection: ~80% of hh tech listings state none, and silence is not evidence of low pay. Rates come from a keyless source, cached, and a cache older than a week refuses to convert rather than quote a stale number
 - **Salaries render as money** - `83 000-220 000 ₽ (~$2,689/mo) net` - with gross/net shown, because a pay figure without it is off by ~13% and I can't defend it. hh quotes RUR and BYR, the codes retired in 1998 and 2016, so those alias through to RUB and BYN or half the rows convert to nothing
+- **The floor is per source.** A line that reads as fair on a US board wipes out the CIS, where the same role pays a fraction of it and isn't a scam. hh has its own floor field in its Setup block: blank inherits the global one, `0` switches it off there only. The ~75% of listings that state no salary pass through untouched at every setting
 - **Degeneration guard catches phrase loops**, not just single stuttered words
 - Test suite 134 → 224
 
@@ -299,7 +300,6 @@ Your `keys.py` is gitignored. Don't commit it.
 
 ### Later
 
-- Per-source salary floors - one global floor can't fit both the US and the CIS
 - Multi-thread chat (currently one persistent conversation)
 - Outreach send-tracking with calendar reminders
 
