@@ -883,3 +883,23 @@ class TestBlankResearchIsNotACacheHit:
                                       "European retailers, founded 2019.",
                    "researched_at": "2026-08-01T00:00:00+00:00"})
         assert comp.get_cached(conn, "acme.com", 0) is not None
+
+
+class TestHrPortalDomains:
+    """hh employers list work.acme.ru; email guessing and research want acme.ru."""
+
+    def test_hr_prefixes_are_stripped(self):
+        assert brain1.clean_domain("https://work.sovcombank.ru/") == "sovcombank.ru"
+        assert brain1.clean_domain("http://job.psbank.ru") == "psbank.ru"
+        assert brain1.clean_domain("https://careers.acme.com") == "acme.com"
+
+    def test_a_prefix_that_would_leave_no_domain_is_kept(self):
+        assert brain1.clean_domain("https://job.ru") == "job.ru"
+
+    def test_normal_subdomains_survive(self):
+        assert brain1.clean_domain("https://ekb.ligarobotov.ru/") == "ekb.ligarobotov.ru"
+
+    def test_hh_itself_is_not_a_company(self):
+        # some employers give hh as their own website
+        for u in ("https://hh.ru/", "https://hh.uz", "http://www.hh.kz/employer/1"):
+            assert brain1.clean_domain(u) == ""

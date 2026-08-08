@@ -143,3 +143,36 @@ class TestRemoteFlag:
         assert self._row(None)["is_remote"] is None
         v = {"vacancyId": 1, "name": "Удалённый разработчик", "area": {}}
         assert hh.parse_vacancy(v)["is_remote"] is True
+
+
+class TestCompanyDomain:
+    """The employer's site rides along in the search result. When it's blank the
+    employer page has nothing either, so there is no second request worth making."""
+
+    def _row(self, company):
+        return hh.parse_vacancy({"vacancyId": 7, "name": "x", "area": {},
+                                 "company": company})
+
+    def test_the_site_becomes_the_direct_url(self):
+        r = self._row({"id": 5, "companySiteUrl": "https://acme.ru/"})
+        assert r["company_url_direct"] == "https://acme.ru/"
+
+    def test_the_employer_page_is_built_from_the_id(self):
+        r = self._row({"id": 5447820})
+        assert r["company_url"].endswith("/employer/5447820")
+
+    def test_no_id_means_no_invented_url(self):
+        assert self._row({"companySiteUrl": "https://acme.ru"})["company_url"] == ""
+
+    def test_a_missing_site_stays_empty(self):
+        assert self._row({"id": 5})["company_url_direct"] == ""
+
+    def test_the_direct_site_wins_over_the_employer_page(self):
+        import pipeline.brain1 as b1
+        r = self._row({"id": 5, "companySiteUrl": "https://acme.ru/"})
+        assert b1.clean_domain(b1._company_domain(r)) == "acme.ru"
+
+    def test_an_hh_only_row_yields_no_company_domain(self):
+        """company_url is always an hh employer page, which is not a company."""
+        import pipeline.brain1 as b1
+        assert b1._company_domain(self._row({"id": 5})) == ""

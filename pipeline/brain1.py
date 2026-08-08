@@ -646,6 +646,11 @@ def clean_domain(domain: str) -> str:
     # Strip www./uk./es./etc subdomain
     if d.startswith("www."):
         d = d[4:]
+    # HR portals: hh employers list work.acme.ru, but mail and research want acme.ru
+    for pre in ("work.", "job.", "jobs.", "career.", "careers.", "hr.", "rabota."):
+        if d.startswith(pre) and d[len(pre):].count(".") >= 1:
+            d = d[len(pre):]
+            break
     # Drop job boards, socials, and ATS/apply hosts — not the real company domain
     bad_hosts = (
         "linkedin.com", "indeed.com", "glassdoor.com", "google.com",
@@ -656,6 +661,8 @@ def clean_domain(domain: str) -> str:
         "jobvite.com", "icims.com", "breezy.hr", "recruitee.com",
         "applytojob.com", "teamtailor.com", "bamboohr.com",
         "workatastartup.com",
+        # some hh employers give hh itself as their website
+        "hh.ru", "hh.uz", "hh.kz", "hh.by", "headhunter.ru", "rabota.by",
     )
     if any(d.endswith(host) for host in bad_hosts):
         return ""
@@ -1284,7 +1291,7 @@ def safe_scrape(term: str, sources: list[str], results_wanted: int,
 
 
 def yc_jobs_to_rows(yc_jobs: list[dict]) -> list[dict]:
-    """Convert ycombinator_jobs_scraper output into JobSpy-style row dicts so YC
+    """Convert ycombinator_jobs_scraper output into the shared row shape so YC
     listings flow through the exact same Stage 1 path as LinkedIn. YC has
     no salary or numeric id; we leave id=None so the downstream fallback builds a
     stable one from company/title/date."""
@@ -1359,8 +1366,7 @@ def _parse_yc_date(s: str):
 def apply_yc_date_filter(rows: list[dict], hours_old: int,
                          now: datetime | None = None,
                          return_stats: bool = False):
-    """Freshness window over REAL posting dates (JobSpy does this server-side;
-    YC/HN have no param for it). Estimated dates (WaaS) pass through — they're
+    """Freshness window over REAL posting dates (no source filters by date for us). Estimated dates (WaaS) pass through — they're
     fabrications, the ledger + cap govern them instead. Day-granular dates
     compare by date (inclusive), full timestamps (HN) compare exactly.
     Undated rows are dropped: can't confirm fresh = the stale-leak bug.
@@ -1713,7 +1719,7 @@ def run_brain1() -> None:
                 job = {c: qrow[c] for c in JOB_INSERT_COLS}
                 _judge_job(job, progress_label="(queued)")
 
-        # YC-only run (no JobSpy sites) skips this loop — avoids an empty JobSpy call.
+        # YC/HN/hh-only run skips this loop — avoids an empty LinkedIn call.
         scrape_terms = (list(enumerate(search_terms, 1))
                         if not aborted and linkedin_enabled(sources)
                         and all(_scrape_allowed(s, s) for s in sources) else [])

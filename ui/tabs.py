@@ -926,7 +926,8 @@ def render_setup_tab():
         ui.html('<div class="section-title">Search Terms</div>')
         ui.html(
             '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
-            'One per line. Each becomes a JobSpy search.</div>'
+            'One per line. The fallback for any source whose own terms box is '
+            'empty. YC and HN ignore terms entirely.</div>'
         )
         terms_ta = ui.textarea(
             value=cfg["search_terms"],

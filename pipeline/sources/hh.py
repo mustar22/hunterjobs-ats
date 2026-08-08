@@ -115,8 +115,12 @@ def parse_vacancy(v: dict) -> dict | None:
         "id": f"hh-{vid}",
         "title": title,
         "company": comp.get("visibleName") or comp.get("name") or "",
-        "company_url_direct": "",
-        "company_url": (comp.get("@url") or ""),
+        # the real site rides along in the search result; when it's blank the
+        # employer page has nothing either, so there's no second request to make
+        "company_url_direct": comp.get("companySiteUrl") or "",
+        # @url is null on every row, so build the employer page from the id
+        "company_url": (f"https://{HOST}/employer/{comp['id']}"
+                        if comp.get("id") else ""),
         "location": area,
         "job_type": "",
         # hh actually publishes salary, unlike most boards. from/to are already

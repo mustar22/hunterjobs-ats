@@ -10,7 +10,7 @@ Hacker News "Ask HN: Who is hiring?" as a job source. No auth, no LLM:
     the cleaned comment text becomes the job description that Stage 1 judges.
     Blank fields when unsure — nothing is fabricated.
 
-Emits JobSpy-shaped row dicts (source="hn") so HN flows through the exact same
+Emits the shared row shape (source="hn") so HN flows through the exact same
 Stage 1 path as LinkedIn/YC. Every network call is contained → any
 failure returns [] / skips the item and never blocks the rest of the scrape.
 """
@@ -119,7 +119,7 @@ def _clean_html(raw: str) -> tuple[str, list[str]]:
 
 
 def parse_comment(item: dict | None, thread_date: str = "") -> dict | None:
-    """Parse one top-level comment into a JobSpy-shaped row, or None if it's
+    """Parse one top-level comment into a row, or None if it's
     not a usable posting (deleted/dead, or too short for Stage 1)."""
     if not item or item.get("type") != "comment":
         return None
@@ -205,7 +205,7 @@ LOSS_ALARM = 0.10
 
 
 def scrape_hn_jobs(cfg: dict, stats: dict | None = None) -> list[dict]:
-    """Scrape the current 'Who is hiring?' thread into JobSpy-shaped rows.
+    """Scrape the current 'Who is hiring?' thread into shared-shape rows.
 
     Logs the whole funnel — ids → fetched → parsed — because every stage here
     used to drop rows silently: the cap trimmed a 311-comment thread to 200,
