@@ -55,6 +55,7 @@ from pipeline.sources import linkedin as li
 from pipeline.sources import hh
 from pipeline.metering import ScanMeter
 import core.embeddings as embeddings
+import core.fx as fx
 import core.ledger as ledger
 import core.runner_status as runner_status
 
@@ -158,6 +159,27 @@ def get_gemma_client(cfg: dict, keys: dict, stage_group: str = "stage2"):
 # ── helpers ───────────────────────────────────────────────────────────────────
 def description_hash(text: str) -> str:
     return hashlib.md5(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def below_salary_floor(job: dict, floor: int) -> str | None:
+    """Reason string when a listing is KNOWN to pay under the floor, else None.
+
+    Only hh states a salary, so silence is the normal case and must never be
+    read as "pays badly". This rejects on one condition: the top of the stated
+    range converts cleanly to USD and still lands under the floor. No number, no
+    exchange rate, no rejection.
+    """
+    if not floor:
+        return None
+    top = job.get("salary_max") or job.get("salary_min")
+    if not top:
+        return None
+    usd = fx.to_usd(top, job.get("currency") or "")
+    if usd is None or usd >= floor:
+        return None
+    gross = job.get("salary_gross") or ""
+    return (f"salary {round(usd)} USD/mo{' ' + gross if gross else ''} "
+            f"< floor {floor}")
 
 
 def hard_reject_check(text: str, rejects: list[str]) -> str | None:
@@ -1079,7 +1101,7 @@ JOB_INSERT_COLS = (
     "id", "title", "company", "domain", "location", "job_type",
     "salary_min", "salary_max", "currency", "source", "url",
     "description", "date_posted", "date_scraped", "description_hash",
-    "date_posted_estimated", "yc_slug", "company_url",
+    "date_posted_estimated", "yc_slug", "company_url", "salary_gross",
 )
 
 
@@ -1103,6 +1125,7 @@ def scraped_row_to_job(row, job_id: str = "", desc: str = "",
         "salary_min": row.get("min_amount"),
         "salary_max": row.get("max_amount"),
         "currency": str(row.get("currency") or ""),
+        "salary_gross": str(row.get("salary_gross") or ""),
         "source": str(row.get("site") or ""),
         "url": str(row.get("job_url") or ""),
         "description": desc,
@@ -1125,13 +1148,14 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
     params["date_posted_estimated"] = int(params.get("date_posted_estimated") or 0)
     params["yc_slug"] = params.get("yc_slug") or ""
     params["company_url"] = params.get("company_url") or ""
+    params["salary_gross"] = params.get("salary_gross") or ""
     conn.execute(
         """
         INSERT OR REPLACE INTO jobs (
             id, title, company, domain, location, job_type,
             salary_min, salary_max, currency, source, url,
             description, date_posted, date_scraped, description_hash,
-            date_posted_estimated, yc_slug, company_url,
+            date_posted_estimated, yc_slug, company_url, salary_gross,
             verdict, reject_reason, gemma1_done,
             work_mode, us_auth_required,
             company_summary, hiring_signal, real_stack, culture_flags, company_size,
@@ -1141,7 +1165,7 @@ def insert_job_with_verdict(conn, job: dict, verdict: str, reject_reason: str,
             :id, :title, :company, :domain, :location, :job_type,
             :salary_min, :salary_max, :currency, :source, :url,
             :description, :date_posted, :date_scraped, :description_hash,
-            :date_posted_estimated, :yc_slug, :company_url,
+            :date_posted_estimated, :yc_slug, :company_url, :salary_gross,
             :verdict, :reject_reason, :gemma1_done,
             :work_mode, :us_auth_required,
             NULL, 'uncertain', '[]', '[]', 'tiny',
@@ -1416,6 +1440,7 @@ def run_brain1() -> None:
     hard_rejects = [
         t.strip() for t in cfg.get("hard_rejects", "").splitlines() if t.strip()
     ]
+    salary_floor = int(cfg.get("salary_floor") or 0)
     # companies the user has said are NOT agencies — never auto-blocked
     dismissed = {c.strip().lower() for c in cfg.get("dismissed_suspects", [])
                  if isinstance(c, str) and c.strip()}
@@ -1592,6 +1617,15 @@ def run_brain1() -> None:
         reject_kw = hard_reject_check(reject_text, hard_rejects)
         if reject_kw:
             insert_job_with_verdict(conn, job, "BAD", f"hard_reject: {reject_kw}")
+            counts["hard_rej"] += 1
+            meter.count("hard_rejected")
+            runner_status.patch("brain1", **counts)
+            return True
+
+        # ── under the stated salary floor (free) ──
+        floor_why = below_salary_floor(job, salary_floor)
+        if floor_why:
+            insert_job_with_verdict(conn, job, "BAD", f"hard_reject: {floor_why}")
             counts["hard_rej"] += 1
             meter.count("hard_rejected")
             runner_status.patch("brain1", **counts)

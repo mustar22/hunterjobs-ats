@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     salary_min       INTEGER,
     salary_max       INTEGER,
     currency         TEXT,
+    salary_gross     TEXT DEFAULT '',   -- 'gross' | 'net' | '' (unstated)
     source           TEXT,
     url              TEXT,
     description      TEXT,
@@ -296,6 +297,8 @@ def init_db() -> None:
         ("us_auth_required", "TEXT DEFAULT 'unclear'"),
         # the company page URL; a listing never carries a real domain
         ("company_url", "TEXT DEFAULT ''"),
+        # v0.9: 'gross' | 'net' | '' (unstated). hh is the only source that says
+        ("salary_gross", "TEXT DEFAULT ''"),
     ]:
         if col not in existing_cols:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_def}")

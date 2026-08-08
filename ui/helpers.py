@@ -97,3 +97,35 @@ def safe_notify(msg: str, **kw) -> None:
     except Exception:
         # parent slot deleted, no client context, etc — best-effort only
         pass
+
+
+# hh quotes RUR/BYR, the pre-redenomination codes; symbols people recognise
+_CUR_SYM = {"RUR": "₽", "RUB": "₽", "UZS": "so'm", "KZT": "₸",
+            "BYR": "Br", "BYN": "Br", "USD": "$", "EUR": "€"}
+
+
+def fmt_salary(lo, hi, currency: str | None, gross: str | None = "") -> str:
+    """A stated salary as money, with the USD equivalent when I can get one.
+    Empty string when there's no number - the caller decides what silence means."""
+    if not lo and not hi:
+        return ""
+    cur = (currency or "").upper()
+    sym = _CUR_SYM.get(cur, cur)
+
+    def n(v):
+        return f"{int(v):,}".replace(",", " ") if v else "?"
+
+    body = n(lo) if (lo and not hi) else (n(hi) if (hi and not lo) else f"{n(lo)}-{n(hi)}")
+    if lo and not hi:
+        body = f"from {body}"
+    elif hi and not lo:
+        body = f"up to {body}"
+    out = f"{body} {sym}".strip()
+
+    from core import fx
+    usd = fx.to_usd(hi or lo, cur)
+    if usd and cur != "USD":
+        out += f" (~${round(usd):,}/mo)"
+    if gross:
+        out += f" {gross}"
+    return out

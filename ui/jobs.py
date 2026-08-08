@@ -24,7 +24,7 @@ from pipeline.process_control import spawn_detached, kill_pid, _is_pid_alive
 from ui.theme import COLOR_SWATCHES
 from ui.helpers import (
     verdict_pill, source_pill, signal_pill, work_mode_pill, us_auth_pill,
-    fmt_ts, status_dot_class, safe_notify, run_in_thread,
+    fmt_ts, status_dot_class, safe_notify, run_in_thread, fmt_salary,
 )
 from ui.db_queries import (
     fetch_jobs, mark_applied, unmark_applied, update_notes,
@@ -382,12 +382,14 @@ def render_job_row(row: dict, refresh_list_fn):
                 ]
                 if row.get("location"):
                     meta_bits.append(row["location"])
-                sal_min = row.get("salary_min")
-                sal_max = row.get("salary_max")
-                if sal_min or sal_max:
-                    meta_bits.append(
-                        f'{sal_min or "?"}–{sal_max or "?"} {row.get("currency") or ""}'
-                    )
+                sal = fmt_salary(row.get("salary_min"), row.get("salary_max"),
+                                 row.get("currency"), row.get("salary_gross"))
+                if sal:
+                    meta_bits.append(sal)
+                elif (row.get("source") or "") == "hh":
+                    # hh has a salary field, so empty means the employer left it
+                    # blank. Everywhere else empty just means nobody publishes one
+                    meta_bits.append("no salary stated")
                 ui.html(
                     f'<div class="job-meta">{" · ".join(str(b) for b in meta_bits)}</div>'
                 )

@@ -17,6 +17,7 @@ core/                   leaf layer, no deps on pipeline/ui
   schemas.py            Pydantic models for structured LLM outputs
   runner_status.py      file-based IPC (runner_status.json): state, PID, heartbeat
   embeddings.py         RAG — Gemini embeddings + sqlite-vec
+  fx.py                 USD rates for the salary floor, keyless + cached; refuses when stale
 
 pipeline/
   brain1.py             the scan: scrape → Stage 1 filter → enrichment

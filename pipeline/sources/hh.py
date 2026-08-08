@@ -119,10 +119,16 @@ def parse_vacancy(v: dict) -> dict | None:
         "company_url": (comp.get("@url") or ""),
         "location": area,
         "job_type": "",
-        # hh actually publishes salary, unlike most boards
+        # hh actually publishes salary, unlike most boards. from/to are already
+        # normalised to a month - perModeFrom/perModeTo hold the raw per-shift
+        # figure, so a 8000/shift job reads as 120000 here, which is what the
+        # monthly floor wants.
         "min_amount": money.get("from"),
         "max_amount": money.get("to"),
         "currency": money.get("currencyCode") or "",
+        # gross vs net is a ~13% swing; a number without it isn't defensible
+        "salary_gross": "" if money.get("gross") is None else
+                        ("gross" if money["gross"] else "net"),
         "site": "hh",
         "job_url": ((v.get("links") or {}).get("desktop")
                     or f"https://{HOST}/vacancy/{vid}"),
