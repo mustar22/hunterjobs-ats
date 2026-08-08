@@ -1876,6 +1876,7 @@ def run_brain1() -> None:
                         yc_slug=job.get("yc_slug") or "",
                         skip_hunt=bool(baked), meter=meter,
                         company_url=job.get("company_url") or "",
+                        source=job.get("source") or "",
                     )
                     research = CompanyResearch(
                         company_summary=e["company_summary"],
@@ -1988,6 +1989,7 @@ def _manual_enrich(job_id: str, stage_label: str):
                 conn, cfg, job["company"], job["domain"],
                 client=client, model=model, backend=backend,
                 yc_slug=job.get("yc_slug") or "", force=True,
+                source=job.get("source") or "",
             )
             r = CompanyResearch(
                 company_summary=e["company_summary"],

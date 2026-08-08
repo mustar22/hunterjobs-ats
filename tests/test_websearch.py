@@ -14,7 +14,7 @@ import core.websearch as ws
 
 @pytest.fixture
 def no_ddgs(monkeypatch):
-    monkeypatch.setattr(ws, "_ddgs", lambda q, n, t: [{"title": "d", "body": "dd", "url": "u"}])
+    monkeypatch.setattr(ws, "_ddgs", lambda q, n, t, src="": [{"title": "d", "body": "dd", "url": "u"}])
 
 
 class TestDispatch:
@@ -44,3 +44,43 @@ class TestDispatch:
 
     def test_snippets_text(self):
         assert ws.snippets_text([{"title": "A", "body": "B", "url": ""}]) == "A: B"
+
+
+class TestBackendChoice:
+    """Yandex is always on for hh and opt-in elsewhere, so by default a Russian
+    engine only ever sees Russian queries."""
+
+    def _cfg(self, monkeypatch, cfg):
+        import core.config as c
+        monkeypatch.setattr(c, "load_config", lambda: cfg)
+
+    def test_western_sources_get_no_yandex_by_default(self, monkeypatch):
+        self._cfg(monkeypatch, {})
+        for src in ("", "linkedin", "yc", "hn"):
+            assert "yandex" not in ws._backends(src)
+
+    def test_hh_always_gets_yandex_first(self, monkeypatch):
+        self._cfg(monkeypatch, {})
+        assert ws._backends("hh").startswith("yandex")
+
+    def test_hh_keeps_yandex_even_with_a_custom_chain(self, monkeypatch):
+        self._cfg(monkeypatch, {"search_backends": "mojeek"})
+        assert ws._backends("hh").startswith("yandex")
+
+    def test_the_opt_in_adds_yandex_everywhere(self, monkeypatch):
+        self._cfg(monkeypatch, {"search_yandex": True})
+        assert "yandex" in ws._backends("linkedin")
+
+    def test_a_custom_chain_is_respected(self, monkeypatch):
+        self._cfg(monkeypatch, {"search_backends": "yahoo"})
+        assert ws._backends("linkedin") == "yahoo"
+
+    def test_the_dead_engines_are_not_the_default(self):
+        # measured 2026-08-08: all three returned nothing, every query
+        for dead in ("duckduckgo", "startpage", "mojeek"):
+            assert dead not in ws.DDGS_BACKEND
+
+    def test_a_broken_config_still_yields_a_chain(self, monkeypatch):
+        import core.config as c
+        monkeypatch.setattr(c, "load_config", lambda: (_ for _ in ()).throw(OSError))
+        assert ws._backends("linkedin")

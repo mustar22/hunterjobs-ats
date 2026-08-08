@@ -34,6 +34,10 @@ DEFAULT_CONFIG = {
     "search_terms": "machine learning engineer\ngenerative AI engineer",
     "linkedin_search_terms": "",   # per-source; empty = use search_terms
     "hard_rejects": "US citizenship required\nW2 only\nsecurity clearance",
+    # keyless search engine order. Yandex is always first for hh (it is the
+    # only one that indexes the Russian web) and opt-in for everything else.
+    "search_backends": "",
+    "search_yandex": False,
     # Agency-suspects the user dismissed as "not an agency" — kept out of suggestions.
     "dismissed_suspects": [],
     # Companies the user manually staged as suspects (alongside Stage 2 auto-flags).

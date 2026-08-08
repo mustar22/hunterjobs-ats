@@ -20,6 +20,7 @@ from core import database  # for live RAG_AVAILABLE flag
 from core.database import get_db_connection
 import core.embeddings as embeddings  # RAG backfill
 import core.runner_status as runner_status
+import core.websearch as websearch
 from core.config import load_config, save_config, load_keys, OPENROUTER_URL
 from pipeline import brain2_chat  # chat + clear history
 from pipeline.process_control import spawn_detached, kill_pid, _is_pid_alive
@@ -1246,6 +1247,31 @@ def render_setup_tab():
 
                 render_suspects()
 
+        ui.html('<div class="section-title">Web search</div>')
+        ui.html(
+            '<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">'
+            'Used to research a company when it has no reachable website. A Tavily '
+            'or Serper key in <code>keys.py</code> takes priority; these engines are '
+            'the keyless fallback, tried in order. Yandex is the only one that '
+            'indexes the Russian web properly, so <b>it is always used for hh '
+            'listings</b>. It is off for every other source unless you tick it '
+            'below.</div>'
+        )
+        with ui.row().style("gap: 14px; flex-wrap: wrap; align-items: center;"):
+            backends_in = ui.input(
+                label="Engine order",
+                value=cfg.get("search_backends", "") or "",
+                placeholder=websearch.DDGS_BACKEND)\
+                .props("outlined dense").style("width: 300px;")
+            backends_in.tooltip("Comma separated, tried in order. Blank uses the "
+                                "default. Available: yandex, yahoo, brave, google, "
+                                "duckduckgo, startpage, mojeek, wikipedia.")
+            yandex_cb = ui.checkbox("Allow Yandex for non-hh sources",
+                                    value=bool(cfg.get("search_yandex")))
+            yandex_cb.tooltip("Off by default: a Russian engine only sees Russian "
+                              "queries. Tick it and your LinkedIn/YC/HN company "
+                              "lookups go through Yandex too.")
+
         ui.html('<div class="section-title">Scrape Settings</div>')
         with ui.row().style("gap: 14px; flex-wrap: wrap;"):
             floor_in = ui.number(label="Salary floor (USD/month)",
@@ -1588,6 +1614,8 @@ def render_setup_tab():
                 "search_terms": terms_ta.value,
                 "hard_rejects": rejects_ta.value,
                 "salary_floor": int(floor_in.value or 0),
+                "search_backends": (backends_in.value or "").strip(),
+                "search_yandex": bool(yandex_cb.value),
                 # kept as text: blank inherits, "0" means off — an int can't say both
                 "hh_salary_floor": (hh_floor_in.value or "").strip(),
                 "results_wanted": int(rw_in.value or 100),

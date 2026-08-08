@@ -120,7 +120,8 @@ def _fetch_ok(text: str) -> bool:
 
 
 def gather_site_content(company: str, domain: str,
-                        client=None, model=None, backend=None) -> tuple[str, str, list[str]]:
+                        client=None, model=None, backend=None,
+                        source: str = "") -> tuple[str, str, list[str]]:
     """Best available company text: homepage → /about → search snippets.
     Returns (text, tag, source_urls). Never feeds a raw '(fetch failed: ...)'
     string to the model."""
@@ -134,7 +135,7 @@ def gather_site_content(company: str, domain: str,
             return text, "website", [f"https://{cdomain}/about"]
     # last resort: search snippets, so the model judges SOMETHING real
     from core import websearch
-    results = websearch.search(f'"{company}" company')
+    results = websearch.search(f'"{company}" company', source=source)
     snippets = websearch.snippets_text(results)
     if snippets:
         return snippets, "search", [r["url"] for r in results if r.get("url")][:3]
@@ -290,7 +291,7 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
                    client=None, model=None, backend=None,
                    yc_slug: str = "", skip_hunt: bool = False,
                    force: bool = False, meter=None,
-                   company_url: str = "") -> dict:
+                   company_url: str = "", source: str = "") -> dict:
     """Research + contacts for one company, cache-first. Returns the cache-row
     dict shape (research fields + contacts list + hunted flag + from_cache)."""
     # A LinkedIn listing carries a company NAME and a slug, never a domain, so
@@ -354,7 +355,8 @@ def enrich_company(conn, cfg: dict, company: str, domain: str,
         sources = (cached.get("sources") or []) or sources
     else:
         site_text, site_tag, site_urls = gather_site_content(company, domain,
-                                                             client, model, backend)
+                                                             client, model, backend,
+                                                             source=source)
         label = "Company site" if site_tag == "website" else "Web search"
         sources += [{"label": label, "url": u} for u in site_urls]
         prompt = _build_prompt(company, domain, yc, site_text, site_tag,
